@@ -1,26 +1,94 @@
+@import url('https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital,wght@0,300;0,400;0,600;0,700;1,400;1,600&family=Jost:wght@300;400;500;600;700&family=Pinyon+Script&display=swap');
 @import "tailwindcss";
 
 :root {
-  --background: #ffffff;
-  --foreground: #171717;
+  --background: #FDFBF7; /* Warm Ivory */
+  --foreground: #222221; /* Charcoal */
+  --card: #ffffff;
+  --card-foreground: #222221;
+  --primary: #1F3E29; /* Forest Green */
+  --primary-foreground: #FDFBF7;
+  --secondary: #58181F; /* Wine Red */
+  --secondary-foreground: #FDFBF7;
+  --accent: #CFA138; /* Gold */
+  --accent-foreground: #1E1E1D;
+  --muted: #F2ECE1;
+  --muted-foreground: #6B6A64;
+  --border: #E8E2D5;
 }
 
-@theme inline {
+@theme {
   --color-background: var(--background);
   --color-foreground: var(--foreground);
-  --font-sans: var(--font-geist-sans);
-  --font-mono: var(--font-geist-mono);
-}
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-border: var(--border);
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
-  }
+  --font-serif: 'Cormorant Garamond', Georgia, serif;
+  --font-sans: 'Jost', system-ui, -apple-system, sans-serif;
+  --font-script: 'Pinyon Script', cursive;
 }
 
 body {
   background: var(--background);
   color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+  font-family: 'Jost', system-ui, -apple-system, sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+
+h1, h2, h3, h4, h5, h6 {
+  font-family: 'Cormorant Garamond', Georgia, serif;
+}
+
+/* Custom styles for styling the receipt scrollbar and general nice visuals */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: rgba(31, 62, 41, 0.2);
+  border-radius: 4px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(31, 62, 41, 0.4);
+}
+
+/* Scrollbar hide utility */
+.scrollbar-none {
+  -ms-overflow-style: none;    /* IE/Edge */
+  scrollbar-width: none;       /* Firefox */
+  -webkit-overflow-scrolling: touch; /* smooth iOS momentum scroll */
+}
+.scrollbar-none::-webkit-scrollbar {
+  display: none;               /* Chrome/Safari/Opera */
+}
+
+/* Smooth scrolling */
+html {
+  scroll-behavior: smooth;
+}
+
+/* Prevent horizontal overflow on mobile */
+body {
+  overflow-x: hidden;
+}
+
+/* Slide up animation for cart bar */
+@keyframes slideUp {
+  from { transform: translateY(100%); opacity: 0; }
+  to   { transform: translateY(0);    opacity: 1; }
+}
+.animate-slide-up {
+  animation: slideUp 0.25s cubic-bezier(0.22, 1, 0.36, 1);
 }
