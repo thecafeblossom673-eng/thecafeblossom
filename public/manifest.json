@@ -1,0 +1,19 @@
+{
+  "name": "Cafe Blossom Billing & Ordering",
+  "short_name": "Cafe Blossom",
+  "description": "Internal Order Management and Billing System for Cafe Blossom, Ishvarpur",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#FDFBF7",
+  "theme_color": "#1F3E29",
+  "orientation": "portrait-primary",
+  "scope": "/",
+  "icons": [
+    {
+      "src": "/cafe_logo.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any maskable"
+    }
+  ]
+}
