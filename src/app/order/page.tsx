@@ -3,10 +3,12 @@
 import React, { useEffect, useState, useRef, Suspense } from 'react';
 import { useSearchParams, useRouter } from 'next/navigation';
 import { db } from '@/lib/db';
-import { MenuItem } from '@/lib/supabase';
+import { MenuItem } from '@/types';
 import { Coffee, ArrowLeft, Plus, Minus, ShoppingBag, X, CheckCircle, AlertTriangle, Truck, MapPin, Phone } from 'lucide-react';
 import Link from 'next/link';
 import Image from 'next/image';
+import { Modal } from '@/components/Modal';
+import { DateTimeDisplay } from '@/components/DateTimeDisplay';
 
 // Map category names to local food default images
 const getCategoryImage = (categoryName: string | undefined): string => {
@@ -71,6 +73,11 @@ function OrderMenuContent() {
   const [tableNumber, setTableNumber] = useState<number | null>(null);
   const [tableId, setTableId] = useState<string | null>(null);
   const [tableLockedByQR, setTableLockedByQR] = useState(false);
+
+  const [modalConfig, setModalConfig] = useState<{isOpen: boolean, title: string, message: string, type: 'alert' | 'confirm', onConfirm?: () => void}>({isOpen: false, title: '', message: '', type: 'alert'});
+  const showAlert = (title: string, message: string) => setModalConfig({isOpen: true, title, message, type: 'alert'});
+  const closeModal = () => setModalConfig(prev => ({...prev, isOpen: false}));
+
   const [runningOffer, setRunningOffer] = useState<any>(null);
   const [tables, setTables] = useState<any[]>([]);
   const [categories, setCategories] = useState<any[]>([]);
@@ -93,6 +100,7 @@ function OrderMenuContent() {
 
   // Table selection modal
   const [showTableModal, setShowTableModal] = useState(false);
+  const [isLocked, setIsLocked] = useState(false);
 
   // Category drag scroll refs
   const tabsRef = useRef<HTMLDivElement>(null);
@@ -105,13 +113,16 @@ function OrderMenuContent() {
     const init = async () => {
       try {
         await db.sync();
-        const [allTables, cats, items, offer] = await Promise.all([
+        const todayDate = new Date().toLocaleDateString('en-CA');
+        const [allTables, cats, items, offer, status] = await Promise.all([
           db.getTables(),
           db.getCategories(),
           db.getMenuItems(),
           db.getOffer(),
+          db.getSystemStatus(todayDate),
         ]);
         setTables(allTables);
+        setIsLocked(status.isLocked);
         setRunningOffer(offer);
 
         let finalCats = [...cats];
@@ -250,11 +261,11 @@ function OrderMenuContent() {
     // Validate delivery fields if home delivery is selected
     if (isHomeDelivery) {
       if (!deliveryAddress.trim()) {
-        alert('Please enter your delivery address.');
+        showAlert('Delivery Address Required', 'Please enter your delivery address.');
         return;
       }
       if (deliveryPhone.replace(/\D/g, '').length < 10) {
-        alert('Please enter a valid 10-digit phone number for delivery.');
+        showAlert('Invalid Phone', 'Please enter a valid 10-digit phone number for delivery.');
         return;
       }
     }
@@ -337,7 +348,7 @@ function OrderMenuContent() {
       setOrderSuccess(true);
     } catch (e) {
       console.error('Order placement failed:', e);
-      alert('Failed to place order. Please try again or notify staff.');
+      showAlert('Order Failed', 'Failed to place order. Please try again or notify staff.');
     } finally {
       setPlacingOrder(false);
     }
@@ -482,6 +493,12 @@ function OrderMenuContent() {
       {/* Warm backdrop tint overlay */}
       <div className="absolute inset-0 bg-amber-900/10 backdrop-blur-[0.5px] pointer-events-none z-0" />
 
+      {isLocked && (
+        <div className="sticky top-0 bg-red-600 text-white px-4 py-2 text-center text-[11px] font-bold shadow-md z-50 flex items-center justify-center">
+          ⚠️ Cafe is currently closed for orders.
+        </div>
+      )}
+
       {/* Header */}
       <header className="sticky top-0 z-40 bg-primary/95 backdrop-blur-md text-primary-foreground shadow-md">
         <div className="mx-auto max-w-5xl px-4 py-3 flex items-center justify-between">
@@ -495,18 +512,23 @@ function OrderMenuContent() {
             </p>
           </div>
           {/* Show table badge if locked by QR, or Change button if staff/manual */}
-          {tableLockedByQR ? (
-            <div className="flex items-center gap-1 bg-primary-foreground/10 border border-primary-foreground/20 px-2.5 py-1 rounded-md">
-              <span className="text-[9px] font-bold font-sans uppercase tracking-wide opacity-80">🔒 Table {tableNumber}</span>
+          <div className="flex items-center gap-2">
+            {tableLockedByQR ? (
+              <div className="flex items-center gap-1 bg-primary-foreground/10 border border-primary-foreground/20 px-2.5 py-1 rounded-md">
+                <span className="text-[9px] font-bold font-sans uppercase tracking-wide opacity-80">🔒 Table {tableNumber}</span>
+              </div>
+            ) : (
+              <button
+                onClick={() => setShowTableModal(true)}
+                className="bg-primary-foreground/15 hover:bg-primary-foreground/25 px-2.5 py-1 rounded-md text-[10px] font-bold font-sans uppercase tracking-wide transition-colors cursor-pointer"
+              >
+                Change
+              </button>
+            )}
+            <div className="border-l border-primary-foreground/20 pl-2 ml-1">
+              <DateTimeDisplay />
             </div>
-          ) : (
-            <button
-              onClick={() => setShowTableModal(true)}
-              className="bg-primary-foreground/15 hover:bg-primary-foreground/25 px-2.5 py-1 rounded-md text-[10px] font-bold font-sans uppercase tracking-wide transition-colors cursor-pointer"
-            >
-              Change
-            </button>
-          )}
+          </div>
         </div>
       </header>
 
@@ -567,15 +589,39 @@ function OrderMenuContent() {
                 <h3 className="font-serif font-black text-lg text-slate-900 leading-tight">
                   {runningOffer.title}
                 </h3>
-                <p className="text-xs text-slate-600 mt-1 font-sans leading-relaxed">
+                <p className="text-xs text-slate-600 mt-1 font-sans leading-relaxed line-clamp-2">
                   {runningOffer.description}
                 </p>
               </div>
+
+              {/* INCLUDED ITEMS LIST */}
+              {runningOffer.included_items && runningOffer.included_items.length > 0 && (
+                <div className="pt-2 pb-1 space-y-1.5 border-t border-dashed border-border/60">
+                  {runningOffer.included_items.map((item: any, idx: number) => (
+                    <div key={idx} className="flex items-center justify-between text-[11px] font-sans">
+                      <span className="flex items-center gap-1.5 text-slate-700">
+                        <span className="h-1 w-1 bg-primary rounded-full"></span>
+                        {item.name}
+                      </span>
+                      <span className="font-mono text-muted-foreground line-through opacity-70">
+                        ₹{item.original_price}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              )}
               
               <div className="flex items-center justify-between pt-1 border-t border-border/40">
                 <div className="flex items-baseline gap-1.5">
                   <span className="font-mono font-black text-xl text-primary">₹{runningOffer.price}</span>
-                  <span className="text-[10px] text-muted-foreground line-through font-mono">₹240</span>
+                  {runningOffer.original_price && (
+                    <div className="flex items-center gap-1.5">
+                      <span className="text-[10px] text-muted-foreground line-through font-mono">₹{runningOffer.original_price}</span>
+                      <span className="text-[9px] font-bold text-green-600 bg-green-100 px-1.5 py-0.5 rounded-sm uppercase tracking-wider">
+                        {Math.round(((Number(runningOffer.original_price) - Number(runningOffer.price)) / Number(runningOffer.original_price)) * 100)}% OFF
+                      </span>
+                    </div>
+                  )}
                 </div>
                 
                 {/* Add to Cart button */}
@@ -842,6 +888,15 @@ function OrderMenuContent() {
           </div>
         </div>
       )}
+
+      <Modal 
+        isOpen={modalConfig.isOpen}
+        onClose={closeModal}
+        title={modalConfig.title}
+        message={modalConfig.message}
+        type={modalConfig.type}
+        onConfirm={modalConfig.onConfirm}
+      />
     </div>
   );
 }

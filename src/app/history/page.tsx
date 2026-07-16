@@ -2,9 +2,11 @@
 
 import React, { useEffect, useState } from 'react';
 import { db } from '@/lib/db';
-import { Bill } from '@/lib/supabase';
-import { ArrowLeft, Search, Coffee, History, IndianRupee, ShoppingBag, TrendingUp, MessageCircle, CheckCircle, Clock, Calendar, Phone, Trash2 } from 'lucide-react';
+import { Bill } from '@/types';
+import { ArrowLeft, Search, Coffee, History, IndianRupee, ShoppingBag, TrendingUp, MessageCircle, CheckCircle, Clock, Calendar, Phone, Trash2, Send } from 'lucide-react';
 import Link from 'next/link';
+import { Modal } from '@/components/Modal';
+import { DateTimeDisplay } from '@/components/DateTimeDisplay';
 
 type FilterPeriod = 'today' | 'week' | 'month' | 'year' | 'all';
 
@@ -16,22 +18,39 @@ export default function BillHistoryPage() {
   const [period, setPeriod] = useState<FilterPeriod>('today');
   const [busy, setBusy] = useState(false);
 
-  const handleDeleteBill = async (billId: string, orderId: string) => {
-    const password = prompt('Enter admin password to delete this bill:');
-    if (password === null) return;
-    if (password !== '7707') {
-      alert('Incorrect password. Deletion cancelled.');
+  // Custom delete modal state
+  const [deleteTarget, setDeleteTarget] = useState<{billId: string, orderId: string} | null>(null);
+  const [deletePassword, setDeletePassword] = useState('');
+  const [deleteError, setDeleteError] = useState('');
+
+  const [phonePromptBillId, setPhonePromptBillId] = useState<string | null>(null);
+  const [manualPhone, setManualPhone] = useState('');
+
+  const [modalConfig, setModalConfig] = useState<{isOpen: boolean, title: string, message: string, type: 'alert' | 'confirm', onConfirm?: () => void}>({isOpen: false, title: '', message: '', type: 'alert'});
+  const showAlert = (title: string, message: string) => setModalConfig({isOpen: true, title, message, type: 'alert'});
+  const closeModal = () => setModalConfig(prev => ({...prev, isOpen: false}));
+
+  const initiateDelete = (billId: string, orderId: string) => {
+    setDeleteTarget({ billId, orderId });
+    setDeletePassword('');
+    setDeleteError('');
+  };
+
+  const confirmDelete = async () => {
+    if (deletePassword !== '7707') {
+      setDeleteError('Incorrect admin password.');
       return;
     }
 
-    if (!confirm('Are you sure you want to delete this bill? This cannot be undone.')) return;
+    if (!deleteTarget) return;
     setBusy(true);
     try {
-      await db.deleteBill(billId, orderId);
+      await db.deleteBill(deleteTarget.billId, deleteTarget.orderId);
       await fetchHistory();
+      setDeleteTarget(null);
     } catch (err) {
       console.error('Failed to delete bill:', err);
-      alert('Failed to delete bill.');
+      setDeleteError('Failed to delete bill.');
     } finally {
       setBusy(false);
     }
@@ -46,6 +65,31 @@ export default function BillHistoryPage() {
       console.error(err);
     } finally {
       setLoading(false);
+    }
+  };
+
+  const handleSendWhatsapp = async (bill: any) => {
+    if (!bill.orders?.customer_phone) {
+      setPhonePromptBillId(bill.id);
+      setManualPhone('');
+      return;
+    }
+    await executeSend(bill.id);
+  };
+
+  const executeSend = async (billId: string, customPhone?: string) => {
+    setBusy(true);
+    try {
+      const link = await db.getBillWhatsAppLink(billId, customPhone);
+      window.open(link, '_blank');
+      // Refresh bills to show the Sent tick
+      await fetchHistory();
+      setPhonePromptBillId(null);
+    } catch (err) {
+      console.error(err);
+      showAlert('WhatsApp Failed', 'Failed to send WhatsApp. Ensure phone number is valid.');
+    } finally {
+      setBusy(false);
     }
   };
 
@@ -136,12 +180,15 @@ export default function BillHistoryPage() {
           <Link href="/admin" className="p-1 hover:bg-primary-foreground/10 rounded-lg transition-colors">
             <ArrowLeft className="h-5 w-5" />
           </Link>
-          <div className="flex items-center gap-2">
+          <Link href="/" className="flex items-center gap-2 hover:opacity-80 transition-opacity cursor-pointer">
             <Coffee className="h-5 w-5" />
             <div>
               <h1 className="font-serif text-xl font-bold leading-tight">Bill History</h1>
               <p className="text-[10px] uppercase tracking-widest opacity-70 font-sans">Cafe Blossom · Ishvarpur</p>
             </div>
+          </Link>
+          <div className="ml-auto border-l border-primary-foreground/20 pl-3">
+            <DateTimeDisplay />
           </div>
         </div>
       </header>
@@ -304,9 +351,13 @@ export default function BillHistoryPage() {
                           <CheckCircle className="h-3 w-3" /> Sent
                         </span>
                       ) : (
-                        <span className="inline-flex items-center gap-1 text-xs text-amber-700 bg-amber-50 border border-amber-200 px-2 py-0.5 rounded-full font-semibold">
-                          <Clock className="h-3 w-3" /> Pending
-                        </span>
+                        <button
+                          onClick={() => handleSendWhatsapp(bill)}
+                          disabled={busy}
+                          className="inline-flex items-center gap-1 text-xs text-blue-700 bg-blue-50 border border-blue-200 px-2 py-0.5 rounded-full font-semibold hover:bg-blue-100 transition-colors disabled:opacity-50 cursor-pointer"
+                        >
+                          <Send className="h-3 w-3" /> Send
+                        </button>
                       )}
                       {(bill.payment_method || 'cash') === 'cash' && (
                         <span className="inline-flex items-center gap-1 text-xs text-green-700 bg-green-50 border border-green-200 px-2 py-0.5 rounded-full font-semibold">💵 Cash</span>
@@ -320,7 +371,7 @@ export default function BillHistoryPage() {
                     </div>
                     <div className="flex justify-end">
                       <button
-                        onClick={() => handleDeleteBill(bill.id, bill.order_id)}
+                        onClick={() => initiateDelete(bill.id, bill.order_id)}
                         disabled={busy}
                         className="p-1.5 rounded-lg text-muted-foreground/50 hover:text-red-600 hover:bg-red-50 transition-colors cursor-pointer disabled:opacity-50"
                         title="Delete bill"
@@ -375,9 +426,13 @@ export default function BillHistoryPage() {
                               <CheckCircle className="h-3 w-3" /> Sent
                             </span>
                           ) : (
-                            <span className="inline-flex items-center gap-1 text-xs text-amber-700 bg-amber-50 border border-amber-200 px-2 py-0.5 rounded-full font-semibold">
-                              <Clock className="h-3 w-3" /> Pending
-                            </span>
+                            <button
+                              onClick={() => handleSendWhatsapp(bill)}
+                              disabled={busy}
+                              className="inline-flex items-center gap-1 text-xs text-blue-700 bg-blue-50 border border-blue-200 px-2 py-0.5 rounded-full font-semibold hover:bg-blue-100 transition-colors disabled:opacity-50 cursor-pointer"
+                            >
+                              <Send className="h-3 w-3" /> Send
+                            </button>
                           )}
                         </td>
                         <td className="px-4 py-3">
@@ -407,7 +462,7 @@ export default function BillHistoryPage() {
                         </td>
                         <td className="px-4 py-3 text-center">
                           <button
-                            onClick={() => handleDeleteBill(bill.id, bill.order_id)}
+                            onClick={() => initiateDelete(bill.id, bill.order_id)}
                             disabled={busy}
                             className="p-1.5 rounded-lg text-muted-foreground/50 hover:text-red-600 hover:bg-red-50 transition-colors cursor-pointer disabled:opacity-50"
                             title="Delete bill"
@@ -424,6 +479,117 @@ export default function BillHistoryPage() {
           </div>
         )}
       </main>
+
+      {/* Delete Password Modal */}
+      {deleteTarget && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
+          <div className="bg-card w-full max-w-sm rounded-2xl shadow-xl overflow-hidden border border-border animate-in fade-in zoom-in duration-200">
+            <div className="p-6">
+              <div className="flex items-center gap-3 mb-4 text-red-600">
+                <div className="p-2 bg-red-100 rounded-full">
+                  <Trash2 className="h-5 w-5" />
+                </div>
+                <h3 className="font-serif text-lg font-bold">Delete Bill</h3>
+              </div>
+              <p className="text-sm font-sans text-muted-foreground mb-4">
+                This action cannot be undone. Enter the admin password to confirm deletion.
+              </p>
+              
+              <div className="space-y-3 font-sans">
+                <input
+                  type="password"
+                  value={deletePassword}
+                  onChange={(e) => {
+                    setDeletePassword(e.target.value);
+                    setDeleteError('');
+                  }}
+                  onKeyDown={(e) => e.key === 'Enter' && confirmDelete()}
+                  placeholder="Admin Password"
+                  autoFocus
+                  className="w-full px-4 py-2.5 rounded-xl border border-border bg-background focus:border-red-500 focus:ring-1 focus:ring-red-500 transition-colors"
+                />
+                {deleteError && (
+                  <p className="text-xs text-red-600 font-semibold">{deleteError}</p>
+                )}
+              </div>
+            </div>
+            <div className="bg-muted/30 px-6 py-4 flex gap-3 justify-end border-t border-border font-sans">
+              <button
+                onClick={() => setDeleteTarget(null)}
+                disabled={busy}
+                className="px-4 py-2 rounded-xl text-sm font-bold text-muted-foreground hover:bg-muted transition-colors cursor-pointer"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={confirmDelete}
+                disabled={busy || !deletePassword}
+                className="px-4 py-2 rounded-xl text-sm font-bold bg-red-600 text-white hover:bg-red-700 transition-colors disabled:opacity-50 flex items-center gap-2 cursor-pointer"
+              >
+                {busy ? (
+                  <span className="h-4 w-4 rounded-full border-2 border-white border-t-transparent animate-spin" />
+                ) : null}
+                Delete Bill
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {phonePromptBillId && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
+          <div className="bg-card border border-border rounded-2xl shadow-2xl w-full max-w-sm overflow-hidden animate-in zoom-in-95 duration-200">
+            <div className="p-6 space-y-4">
+              <div className="flex items-center gap-3 text-primary mb-2">
+                <Send className="h-6 w-6" />
+                <h3 className="font-serif text-xl font-bold text-foreground">WhatsApp Number</h3>
+              </div>
+              <p className="text-sm text-muted-foreground font-sans">
+                This bill doesn't have a phone number. Enter one below to send the receipt.
+              </p>
+              <div>
+                <input
+                  type="tel"
+                  value={manualPhone}
+                  onChange={(e) => setManualPhone(e.target.value.replace(/\D/g, ''))}
+                  placeholder="10-digit phone number"
+                  maxLength={10}
+                  autoFocus
+                  className="w-full px-4 py-2.5 rounded-xl border border-border bg-background focus:border-primary focus:ring-1 focus:ring-primary transition-colors"
+                />
+              </div>
+            </div>
+            <div className="bg-muted/30 px-6 py-4 flex gap-3 justify-end border-t border-border font-sans">
+              <button
+                onClick={() => setPhonePromptBillId(null)}
+                disabled={busy}
+                className="px-4 py-2 rounded-xl text-sm font-bold text-muted-foreground hover:bg-muted transition-colors cursor-pointer"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={() => executeSend(phonePromptBillId, manualPhone)}
+                disabled={busy || manualPhone.length < 10}
+                className="px-4 py-2 rounded-xl text-sm font-bold bg-primary text-white hover:bg-primary/90 transition-colors disabled:opacity-50 flex items-center gap-2 cursor-pointer"
+              >
+                {busy ? (
+                  <span className="h-4 w-4 rounded-full border-2 border-white border-t-transparent animate-spin" />
+                ) : null}
+                Send Bill
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      <Modal 
+        isOpen={modalConfig.isOpen}
+        onClose={closeModal}
+        title={modalConfig.title}
+        message={modalConfig.message}
+        type={modalConfig.type}
+        onConfirm={modalConfig.onConfirm}
+      />
     </div>
   );
 }

@@ -2,11 +2,13 @@
 
 import React, { useEffect, useState, use, useRef, useCallback } from 'react';
 import { db } from '@/lib/db';
-import { MenuItem, OrderItem, isMockMode } from '@/lib/supabase';
+import { MenuItem, OrderItem } from '@/types';
 import { useRouter } from 'next/navigation';
 import { ArrowLeft, Plus, Minus, Trash2, Receipt, MessageCircle, RefreshCw, Percent, Printer, Truck, MapPin, Phone } from 'lucide-react';
 import Link from 'next/link';
 import Image from 'next/image';
+import { Modal } from '@/components/Modal';
+import { DateTimeDisplay } from '@/components/DateTimeDisplay';
 
 type OrderItemWithMenu = OrderItem & { menu_items?: MenuItem };
 
@@ -88,6 +90,7 @@ export default function OrderEntryPage({ params }: { params: Promise<{ id: strin
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
   const [phone, setPhone] = useState('');
+  const [name, setName] = useState('');
   const [notes, setNotes] = useState<Record<string, string>>({});
   const [discount, setDiscount] = useState<number>(0);
   const [discountType, setDiscountType] = useState<'flat' | 'percent'>('flat');
@@ -95,9 +98,15 @@ export default function OrderEntryPage({ params }: { params: Promise<{ id: strin
   const [cashAmountPaid, setCashAmountPaid] = useState<number>(0);
   const [onlineAmountPaid, setOnlineAmountPaid] = useState<number>(0);
   const [isParcel, setIsParcel] = useState(false);
-  const [extraCharge, setExtraCharge] = useState<number>(0);
-  const [extraChargeLabel, setExtraChargeLabel] = useState<string>('');
+  const [extraCharges, setExtraCharges] = useState<{amount: number, label: string}[]>([{amount: 0, label: ''}]);
   const [deliveryInfo, setDeliveryInfo] = useState<{ address: string; phone: string; placedAt: string } | null>(null);
+  const [showCancelConfirm, setShowCancelConfirm] = useState(false);
+  const [showCloseConfirm, setShowCloseConfirm] = useState(false);
+  const [isLocked, setIsLocked] = useState(false);
+
+  const [modalConfig, setModalConfig] = useState<{isOpen: boolean, title: string, message: string, type: 'alert' | 'confirm', onConfirm?: () => void}>({isOpen: false, title: '', message: '', type: 'alert'});
+  const showAlert = (title: string, message: string) => setModalConfig({isOpen: true, title, message, type: 'alert'});
+  const closeModal = () => setModalConfig(prev => ({...prev, isOpen: false}));
 
   const PARCEL_CHARGE = 10;
 
@@ -154,13 +163,17 @@ export default function OrderEntryPage({ params }: { params: Promise<{ id: strin
   const load = useCallback(async (silent = false) => {
     try {
       await db.sync();
-      const [tableData, cats, items, activeOrder, offer] = await Promise.all([
+      const todayDate = new Date().toLocaleDateString('en-CA');
+      const [tableData, cats, items, activeOrder, offer, status] = await Promise.all([
         db.getTable(tableId),
         db.getCategories(),
         db.getMenuItems(),
         db.getActiveOrder(tableId),
         db.getOffer(),
+        db.getSystemStatus(todayDate),
       ]);
+      
+      setIsLocked(status.isLocked);
 
       setTableNumber(tableData?.table_number ?? null);
 
@@ -218,9 +231,11 @@ export default function OrderEntryPage({ params }: { params: Promise<{ id: strin
         if (bill) {
           setDiscount(bill.discount || 0);
           setDiscountType('flat');
-          setIsParcel((bill.parcel_charge ?? 0) > 0);
-          setExtraCharge(bill.extra_charge ?? 0);
-          setExtraChargeLabel(bill.extra_charge_label ?? '');
+          if (bill.extra_charge) {
+            setExtraCharges([{ amount: bill.extra_charge, label: bill.extra_charge_label || '' }]);
+          } else {
+            setExtraCharges([{ amount: 0, label: '' }]);
+          }
         }
       }
     } catch (err) {
@@ -260,7 +275,8 @@ export default function OrderEntryPage({ params }: { params: Promise<{ id: strin
     ? Math.round(orderTotal * discount / 100)
     : discount;
   const parcelCharge = isParcel ? PARCEL_CHARGE : 0;
-  const extraChargeAmount = Number(extraCharge) || 0;
+  const extraChargeAmount = extraCharges.reduce((s, c) => s + (Number(c.amount) || 0), 0);
+  const combinedExtraChargeLabel = extraCharges.filter(c => Number(c.amount) > 0).map(c => c.label.trim() || 'Extra Charge').join(', ');
   const finalTotal = Math.max(0, orderTotal - discountAmount + parcelCharge + extraChargeAmount);
 
   // Sync payment amounts with final total whenever it changes
@@ -322,10 +338,11 @@ export default function OrderEntryPage({ params }: { params: Promise<{ id: strin
       await db.generateBill(
         order.id,
         phone || null,
+        name || null,
         discountAmount,
         parcelCharge,
         extraChargeAmount,
-        extraChargeLabel.trim() || null
+        combinedExtraChargeLabel || null
       );
       const updated = await db.getActiveOrder(tableId);
       setOrder(updated as ActiveOrder);
@@ -336,27 +353,31 @@ export default function OrderEntryPage({ params }: { params: Promise<{ id: strin
     if (!order) return;
     setBusy(true);
     try {
-      if (isMockMode) {
-        const raw = localStorage.getItem('cafe_blossom_mock_db');
-        if (raw) {
-          const d = JSON.parse(raw);
-          const o = d.orders.find((o: any) => o.id === order.id);
-          if (o) o.status = 'open';
-          localStorage.setItem('cafe_blossom_mock_db', JSON.stringify(d));
-        }
-      } else {
-        const { supabase } = await import('@/lib/supabase');
-        await supabase!.from('orders').update({ status: 'open' }).eq('id', order.id);
-      }
+      await db.unlockOrder(order.id);
       const updated = await db.getActiveOrder(tableId);
       setOrder(updated as ActiveOrder);
     } finally { setBusy(false); }
   };
 
+  const handleCancelOrder = async () => {
+    if (!order) return;
+    setBusy(true);
+    try {
+      await db.cancelOrder(order.id);
+      router.push('/admin');
+    } catch (err) {
+      console.error(err);
+      showAlert('Error', 'Failed to cancel order');
+      setBusy(false);
+      setShowCancelConfirm(false);
+    }
+  };
+
   const buildBillText = () => {
     if (!order || !tableNumber) return '';
-    const date = new Date(order.created_at).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' });
-    const time = new Date(order.created_at).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' });
+    const now = new Date();
+    const date = now.toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' });
+    const time = now.toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' });
     const W = 34;
     const line = '\u2501'.repeat(W);
     const dashes = '\u2504'.repeat(W);
@@ -396,7 +417,7 @@ export default function OrderEntryPage({ params }: { params: Promise<{ id: strin
     }
 
     if (extraChargeAmount > 0) {
-      const extraLabel = extraChargeLabel.trim() || 'Extra Charge';
+      const extraLabel = combinedExtraChargeLabel || 'Extra Charge';
       text += `${extraLabel}${' '.repeat(W - extraLabel.length - `₹${extraChargeAmount}`.length)}₹${extraChargeAmount}\n`;
     }
     text += `${line}\n`;
@@ -422,25 +443,34 @@ export default function OrderEntryPage({ params }: { params: Promise<{ id: strin
   const sendWhatsApp = async () => {
     if (!order) return;
     const digits = phone.replace(/\D/g, '');
-    if (digits.length < 10) { alert('Enter a valid 10-digit phone number'); return; }
+    if (digits.length < 10) { showAlert('Invalid Phone', 'Enter a valid 10-digit phone number'); return; }
     const full = digits.length === 10 ? '91' + digits : digits;
     const url = `https://wa.me/${full}?text=${encodeURIComponent(buildBillText())}`;
     window.open(url, '_blank');
     setBusy(true);
     try {
-      await db.closeTable(order.id, paymentMethod, cashAmountPaid, onlineAmountPaid, true);
+      await db.closeTable(order.id, paymentMethod, cashAmountPaid, onlineAmountPaid, true, phone || null, name || null);
       router.push('/admin');
     } finally { setBusy(false); }
   };
 
-  const closeTableWithoutWhatsApp = async () => {
+  const closeTableWithoutWhatsApp = () => {
     if (!order || busy) return;
-    if (!confirm('Are you sure you want to close this table and save the payment details?')) return;
+    setShowCloseConfirm(true);
+  };
+
+  const handleCloseTable = async () => {
+    if (!order || busy) return;
     setBusy(true);
     try {
-      await db.closeTable(order.id, paymentMethod, cashAmountPaid, onlineAmountPaid, false);
+      await db.closeTable(order.id, paymentMethod, cashAmountPaid, onlineAmountPaid, false, phone || null, name || null);
       router.push('/admin');
-    } finally { setBusy(false); }
+    } catch (err) {
+      console.error(err);
+      showAlert('Error', 'Failed to close table');
+      setBusy(false);
+      setShowCloseConfirm(false);
+    }
   };
 
   const printBill = () => {
@@ -520,13 +550,42 @@ export default function OrderEntryPage({ params }: { params: Promise<{ id: strin
               <span className="text-[10px] font-bold uppercase tracking-wide">Delivery</span>
             </div>
           )}
-          {/* Cart total in header */}
-          {order && !isBilled && (
-            <div className="text-right">
-              <p className="text-xs opacity-70 font-sans">{orderItems.length} item{orderItems.length !== 1 ? 's' : ''}</p>
-              <p className="font-mono font-bold text-base">₹{finalTotal}</p>
+          {isLocked && (
+            <div className="flex items-center gap-1 bg-red-600 text-white px-2.5 py-1 rounded-lg">
+              <span className="text-[10px] font-bold uppercase tracking-wide">Locked</span>
             </div>
           )}
+          {/* Cart total in header */}
+          <div className="flex items-center gap-4">
+            {order && !isBilled && (
+              <button
+                onClick={() => setShowCancelConfirm(true)}
+                disabled={busy}
+                className="px-3 py-1.5 text-[10px] font-bold uppercase tracking-wider bg-red-600 hover:bg-red-700 text-white rounded-lg transition-colors cursor-pointer shadow-sm hidden sm:block"
+              >
+                Cancel Order
+              </button>
+            )}
+            {order && !isBilled && (
+              <div className="text-right">
+                <p className="text-xs opacity-70 font-sans">{orderItems.length} item{orderItems.length !== 1 ? 's' : ''}</p>
+                <p className="font-mono font-bold text-base">₹{finalTotal}</p>
+              </div>
+            )}
+            {order && !isBilled && (
+              <button
+                onClick={() => setShowCancelConfirm(true)}
+                disabled={busy}
+                className="p-2 bg-red-600 hover:bg-red-700 text-white rounded-lg transition-colors cursor-pointer shadow-sm sm:hidden"
+                title="Cancel Order"
+              >
+                <Trash2 className="h-4 w-4" />
+              </button>
+            )}
+            <div className="border-l border-primary-foreground/20 pl-3 ml-2">
+              <DateTimeDisplay />
+            </div>
+          </div>
         </div>
       </header>
 
@@ -597,7 +656,7 @@ export default function OrderEntryPage({ params }: { params: Promise<{ id: strin
               )}
               {extraChargeAmount > 0 && (
                 <div className="flex justify-between text-sm text-slate-700">
-                  <span>✨ {extraChargeLabel.trim() || 'Extra Charge'}</span>
+                  <span>✨ {combinedExtraChargeLabel || 'Extra Charge'}</span>
                   <span className="font-mono">+₹{extraChargeAmount}</span>
                 </div>
               )}
@@ -694,27 +753,43 @@ export default function OrderEntryPage({ params }: { params: Promise<{ id: strin
               )}
             </div>
 
-            {/* Phone input */}
-            <div>
-              <label className="block text-xs font-semibold uppercase tracking-wider text-muted-foreground mb-1.5 font-sans">
-                Guest WhatsApp Number (Optional)
-              </label>
-              <div className="flex rounded-lg border border-border overflow-hidden focus-within:ring-1 focus-within:ring-primary focus-within:border-primary">
-                <span className="bg-muted px-3 py-2.5 text-sm text-muted-foreground font-sans border-r border-border flex items-center">+91</span>
+            {/* Guest Info Inputs */}
+            <div className="space-y-3">
+              <div>
+                <label className="block text-[10px] font-semibold uppercase tracking-wider text-muted-foreground mb-1 font-sans">
+                  Guest Name (Optional)
+                </label>
                 <input
-                  type="tel"
-                  value={phone}
-                  onChange={e => setPhone(e.target.value)}
-                  placeholder="9876543210"
-                  className="flex-1 px-3 py-2.5 text-sm font-sans bg-background text-foreground focus:outline-none"
+                  type="text"
+                  value={name}
+                  onChange={e => setName(e.target.value)}
+                  placeholder="e.g. John Doe"
+                  className="w-full px-3 py-2 text-sm font-sans bg-background text-foreground border border-border rounded-lg focus:outline-none focus:ring-1 focus:ring-primary"
                 />
+              </div>
+              
+              <div>
+                <label className="block text-[10px] font-semibold uppercase tracking-wider text-muted-foreground mb-1 font-sans">
+                  Guest WhatsApp Number <span className="text-muted-foreground opacity-70 normal-case">(Required for WhatsApp)</span>
+                </label>
+                <div className="flex rounded-lg border border-border overflow-hidden focus-within:ring-1 focus-within:ring-primary">
+                  <span className="bg-muted px-3 py-2 text-sm text-muted-foreground font-sans border-r border-border flex items-center">+91</span>
+                  <input
+                    type="tel"
+                    value={phone}
+                    onChange={e => setPhone(e.target.value.replace(/\D/g, ''))}
+                    placeholder="9876543210"
+                    maxLength={10}
+                    className="flex-1 px-3 py-2 text-sm font-sans bg-background text-foreground focus:outline-none"
+                  />
+                </div>
               </div>
             </div>
 
-            <div className="space-y-2">
+            <div className="space-y-2 pt-2">
               <button
                 onClick={sendWhatsApp}
-                disabled={busy || !phone}
+                disabled={busy || !phone || phone.length < 10}
                 className="flex w-full items-center justify-center gap-2 rounded-xl bg-green-600 hover:bg-green-700 disabled:opacity-50 text-white px-4 py-3.5 text-sm font-bold font-sans uppercase tracking-wider transition-colors cursor-pointer shadow-sm"
               >
                 <MessageCircle className="h-5 w-5" />
@@ -811,7 +886,7 @@ export default function OrderEntryPage({ params }: { params: Promise<{ id: strin
                       {qty === 0 ? (
                         <button
                           onClick={() => addItem(item)}
-                          disabled={busy}
+                          disabled={busy || isLocked}
                           className="shrink-0 flex items-center gap-1 bg-primary text-primary-foreground px-3 py-1.5 rounded-lg text-xs font-bold font-sans hover:bg-primary/90 transition-colors cursor-pointer disabled:opacity-50"
                         >
                           <Plus className="h-3.5 w-3.5" /> ADD
@@ -820,7 +895,7 @@ export default function OrderEntryPage({ params }: { params: Promise<{ id: strin
                         <div className="shrink-0 flex items-center gap-1.5">
                           <button
                             onClick={() => changeQty(oi, qty - 1)}
-                            disabled={busy}
+                            disabled={busy || isLocked}
                             className="h-7 w-7 rounded-full border border-border bg-background flex items-center justify-center hover:bg-muted transition-colors cursor-pointer disabled:opacity-50"
                           >
                             <Minus className="h-3.5 w-3.5" />
@@ -828,7 +903,7 @@ export default function OrderEntryPage({ params }: { params: Promise<{ id: strin
                           <span className="w-5 text-center font-mono font-bold text-sm">{qty}</span>
                           <button
                             onClick={() => changeQty(oi, qty + 1)}
-                            disabled={busy}
+                            disabled={busy || isLocked}
                             className="h-7 w-7 rounded-full border border-border bg-background flex items-center justify-center hover:bg-muted transition-colors cursor-pointer disabled:opacity-50"
                           >
                             <Plus className="h-3.5 w-3.5" />
@@ -888,7 +963,8 @@ export default function OrderEntryPage({ params }: { params: Promise<{ id: strin
                         </div>
                         <button
                           onClick={() => changeQty(oi, 0)}
-                          className="text-muted-foreground/50 hover:text-secondary transition-colors cursor-pointer p-1"
+                          disabled={isLocked}
+                          className="text-muted-foreground/50 hover:text-secondary transition-colors cursor-pointer p-1 disabled:opacity-50"
                         >
                           <Trash2 className="h-4 w-4" />
                         </button>
@@ -897,6 +973,7 @@ export default function OrderEntryPage({ params }: { params: Promise<{ id: strin
                       <input
                         type="text"
                         value={notes[oi.id] ?? ''}
+                        disabled={isLocked}
                         onChange={e => setNotes(p => ({ ...p, [oi.id]: e.target.value }))}
                         onBlur={e => saveNote(oi, e.target.value)}
                         placeholder="Instruction (e.g. less spicy)"
@@ -925,6 +1002,7 @@ export default function OrderEntryPage({ params }: { params: Promise<{ id: strin
                           type="number"
                           min={0}
                           value={discount || ''}
+                          disabled={isLocked}
                           onChange={e => setDiscount(Math.max(0, Number(e.target.value)))}
                           placeholder="0"
                           className="w-full px-3 py-1.5 text-sm font-mono bg-background text-foreground focus:outline-none"
@@ -933,6 +1011,7 @@ export default function OrderEntryPage({ params }: { params: Promise<{ id: strin
                       <div className="flex rounded-lg border border-border overflow-hidden">
                         <button
                           onClick={() => setDiscountType('flat')}
+                          disabled={isLocked}
                           className={`px-3 py-1.5 text-xs font-bold font-sans transition-colors cursor-pointer ${
                             discountType === 'flat'
                               ? 'bg-primary text-primary-foreground'
@@ -943,6 +1022,7 @@ export default function OrderEntryPage({ params }: { params: Promise<{ id: strin
                         </button>
                         <button
                           onClick={() => setDiscountType('percent')}
+                          disabled={isLocked}
                           className={`px-3 py-1.5 text-xs font-bold font-sans transition-colors cursor-pointer ${
                             discountType === 'percent'
                               ? 'bg-primary text-primary-foreground'
@@ -962,31 +1042,67 @@ export default function OrderEntryPage({ params }: { params: Promise<{ id: strin
 
                   {/* Extra Charge controls */}
                   <div className="bg-muted/40 rounded-lg p-3 space-y-2 border border-border/50">
-                    <div className="flex items-center gap-2">
-                      <Plus className="h-3.5 w-3.5 text-muted-foreground" />
-                      <span className="text-xs font-semibold uppercase tracking-wider text-muted-foreground font-sans">Extra Charge</span>
-                    </div>
-                    <div className="flex gap-2">
-                      <div className="flex rounded-lg border border-border overflow-hidden flex-1">
-                        <input
-                          type="number"
-                          min={0}
-                          value={extraCharge || ''}
-                          onChange={e => setExtraCharge(Math.max(0, Number(e.target.value)))}
-                          placeholder="Amount (₹)"
-                          className="w-full px-3 py-1.5 text-sm font-mono bg-background text-foreground focus:outline-none"
-                        />
+                    <div className="flex items-center justify-between">
+                      <div className="flex items-center gap-2">
+                        <Plus className="h-3.5 w-3.5 text-muted-foreground" />
+                        <span className="text-xs font-semibold uppercase tracking-wider text-muted-foreground font-sans">Extra Charge</span>
                       </div>
-                      <div className="flex rounded-lg border border-border overflow-hidden flex-1">
-                        <input
-                          type="text"
-                          value={extraChargeLabel}
-                          onChange={e => setExtraChargeLabel(e.target.value)}
-                          placeholder="Label (e.g. Service)"
-                          className="w-full px-3 py-1.5 text-sm font-sans bg-background text-foreground focus:outline-none"
-                        />
-                      </div>
+                      <button
+                        type="button"
+                        onClick={() => setExtraCharges([...extraCharges, {amount: 0, label: ''}])}
+                        disabled={isLocked}
+                        className="text-xs font-bold text-primary hover:underline font-sans cursor-pointer disabled:opacity-50"
+                      >
+                        + Add More
+                      </button>
                     </div>
+                    {extraCharges.map((charge, idx) => (
+                      <div key={idx} className="flex gap-2 items-center">
+                        <div className="flex rounded-lg border border-border overflow-hidden w-24 shrink-0">
+                          <input
+                            type="number"
+                            min={0}
+                            value={charge.amount || ''}
+                            disabled={isLocked}
+                            onChange={e => {
+                              const newCharges = [...extraCharges];
+                              newCharges[idx].amount = Math.max(0, Number(e.target.value));
+                              setExtraCharges(newCharges);
+                            }}
+                            placeholder="Amt (₹)"
+                            className="w-full px-2 py-1.5 text-sm font-mono bg-background text-foreground focus:outline-none"
+                          />
+                        </div>
+                        <div className="flex rounded-lg border border-border overflow-hidden flex-1">
+                          <input
+                            type="text"
+                            value={charge.label}
+                            disabled={isLocked}
+                            onChange={e => {
+                              const newCharges = [...extraCharges];
+                              newCharges[idx].label = e.target.value;
+                              setExtraCharges(newCharges);
+                            }}
+                            placeholder="Label (e.g. Service)"
+                            className="w-full px-3 py-1.5 text-sm font-sans bg-background text-foreground focus:outline-none"
+                          />
+                        </div>
+                        {extraCharges.length > 1 && (
+                          <button
+                            type="button"
+                            onClick={() => {
+                              const newCharges = [...extraCharges];
+                              newCharges.splice(idx, 1);
+                              setExtraCharges(newCharges);
+                            }}
+                            disabled={isLocked}
+                            className="text-red-500 hover:text-red-700 p-1.5 rounded-md hover:bg-red-50 transition-colors cursor-pointer disabled:opacity-50"
+                          >
+                            <Trash2 className="h-4 w-4" />
+                          </button>
+                        )}
+                      </div>
+                    ))}
                   </div>
 
                   {/* Parcel toggle */}
@@ -1001,7 +1117,8 @@ export default function OrderEntryPage({ params }: { params: Promise<{ id: strin
                     <button
                       type="button"
                       onClick={() => setIsParcel(p => !p)}
-                      className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors cursor-pointer ${
+                      disabled={isLocked}
+                      className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors cursor-pointer disabled:opacity-50 ${
                         isParcel ? 'bg-orange-500' : 'bg-muted'
                       }`}
                     >
@@ -1022,7 +1139,7 @@ export default function OrderEntryPage({ params }: { params: Promise<{ id: strin
 
                   {extraChargeAmount > 0 && (
                     <div className="flex justify-between items-center font-sans">
-                      <span className="text-xs text-slate-700 font-medium">✨ {extraChargeLabel.trim() || 'Extra Charge'}</span>
+                      <span className="text-xs text-slate-700 font-medium">✨ {combinedExtraChargeLabel || 'Extra Charge'}</span>
                       <span className="text-sm font-mono font-bold text-slate-700">+₹{extraChargeAmount}</span>
                     </div>
                   )}
@@ -1045,6 +1162,73 @@ export default function OrderEntryPage({ params }: { params: Promise<{ id: strin
           </div>
         </div>
       )}
+      
+      {/* Cancel Order Modal */}
+      {showCancelConfirm && (
+        <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/60 backdrop-blur-sm p-4 animate-in fade-in">
+          <div className="bg-background rounded-2xl shadow-xl w-full max-w-sm p-6 border border-border animate-in zoom-in-95 duration-200">
+            <h3 className="text-xl font-serif font-bold text-foreground mb-2">Cancel Order?</h3>
+            <p className="text-sm text-muted-foreground mb-6 font-sans">
+              Are you sure you want to cancel this order? All items will be removed and the table will be marked as unoccupied. This action cannot be undone.
+            </p>
+            <div className="flex gap-3 w-full">
+              <button
+                onClick={() => setShowCancelConfirm(false)}
+                disabled={busy}
+                className="flex-1 py-2.5 rounded-lg border border-border text-sm font-bold font-sans text-foreground hover:bg-muted transition-colors disabled:opacity-50"
+              >
+                Go Back
+              </button>
+              <button
+                onClick={handleCancelOrder}
+                disabled={busy}
+                className="flex-1 py-2.5 rounded-lg bg-red-600 text-white text-sm font-bold font-sans hover:bg-red-700 transition-colors disabled:opacity-50 flex items-center justify-center gap-2"
+              >
+                {busy ? <RefreshCw className="h-4 w-4 animate-spin" /> : <Trash2 className="h-4 w-4" />}
+                Confirm
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Close Table Modal */}
+      {showCloseConfirm && (
+        <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/60 backdrop-blur-sm p-4 animate-in fade-in">
+          <div className="bg-background rounded-2xl shadow-xl w-full max-w-sm p-6 border border-border animate-in zoom-in-95 duration-200">
+            <h3 className="text-xl font-serif font-bold text-foreground mb-2">Close Table?</h3>
+            <p className="text-sm text-muted-foreground mb-6 font-sans">
+              Are you sure you want to close this table and save the payment details? This will finalize the bill and free the table.
+            </p>
+            <div className="flex gap-3 w-full">
+              <button
+                onClick={() => setShowCloseConfirm(false)}
+                disabled={busy}
+                className="flex-1 py-2.5 rounded-lg border border-border text-sm font-bold font-sans text-foreground hover:bg-muted transition-colors disabled:opacity-50"
+              >
+                Go Back
+              </button>
+              <button
+                onClick={handleCloseTable}
+                disabled={busy}
+                className="flex-1 py-2.5 rounded-lg bg-primary text-primary-foreground text-sm font-bold font-sans hover:bg-primary/90 transition-colors disabled:opacity-50 flex items-center justify-center gap-2"
+              >
+                {busy ? <RefreshCw className="h-4 w-4 animate-spin" /> : <Receipt className="h-4 w-4" />}
+                Confirm Close
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      <Modal 
+        isOpen={modalConfig.isOpen}
+        onClose={closeModal}
+        title={modalConfig.title}
+        message={modalConfig.message}
+        type={modalConfig.type}
+        onConfirm={modalConfig.onConfirm}
+      />
     </div>
   );
 }

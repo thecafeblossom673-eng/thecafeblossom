@@ -3,6 +3,7 @@
 import React, { useState } from 'react';
 import { useAuth } from '@/components/AuthProvider';
 import { Coffee } from 'lucide-react';
+import Link from 'next/link';
 
 export default function LoginPage() {
   const { login } = useAuth();
@@ -30,7 +31,7 @@ export default function LoginPage() {
   return (
     <div className="flex min-h-screen items-center justify-center px-4 py-12 sm:px-6 lg:px-8 bg-background animate-fade-in">
       <div className="w-full max-w-md space-y-8">
-        <div className="flex flex-col items-center">
+        <Link href="/" className="flex flex-col items-center hover:opacity-80 transition-opacity cursor-pointer">
           <div className="flex h-16 w-16 items-center justify-center rounded-full bg-primary/10 text-primary mb-2">
             <Coffee className="h-8 w-8" />
           </div>
@@ -40,7 +41,7 @@ export default function LoginPage() {
           <p className="mt-1 text-center text-sm font-sans tracking-widest uppercase text-muted-foreground">
             Staff Portal — Ishvarpur
           </p>
-        </div>
+        </Link>
 
         <div className="bg-card border border-border shadow-sm rounded-lg p-8 sm:p-10">
           <form className="space-y-6" onSubmit={handleSubmit}>

@@ -4,6 +4,7 @@ import React, { useState } from 'react';
 import Link from 'next/link';
 import Image from 'next/image';
 import { Coffee, BookOpen, UserCheck, X, ChevronLeft, ChevronRight } from 'lucide-react';
+import { DateTimeDisplay } from '@/components/DateTimeDisplay';
 
 export default function CustomerLandingPage() {
   const [menuOpen, setMenuOpen] = useState(false);
@@ -31,13 +32,18 @@ export default function CustomerLandingPage() {
           </div>
           <span className="font-serif text-xl font-bold tracking-wider text-white">Cafe Blossom</span>
         </div>
-        <Link 
-          href="/admin" 
-          className="flex items-center gap-1.5 text-xs text-white/70 hover:text-accent font-medium uppercase tracking-wider transition-colors border border-white/20 hover:border-accent/40 rounded-full px-3.5 py-2 bg-black/30 backdrop-blur-sm"
-        >
-          <UserCheck className="h-3.5 w-3.5" />
-          <span>Staff Access</span>
-        </Link>
+        <div className="flex items-center gap-4">
+          <div className="hidden sm:block text-white">
+            <DateTimeDisplay />
+          </div>
+          <Link 
+            href="/admin" 
+            className="flex items-center gap-1.5 text-xs text-white/70 hover:text-accent font-medium uppercase tracking-wider transition-colors border border-white/20 hover:border-accent/40 rounded-full px-3.5 py-2 bg-black/30 backdrop-blur-sm"
+          >
+            <UserCheck className="h-3.5 w-3.5" />
+            <span>Staff Access</span>
+          </Link>
+        </div>
       </header>
 
       {/* Center Hero Card */}

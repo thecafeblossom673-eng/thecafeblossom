@@ -6,6 +6,7 @@ import { useRouter } from 'next/navigation';
 import Link from 'next/link';
 import { Coffee, History, Users, Clock, TrendingUp, QrCode, LogOut, Percent } from 'lucide-react';
 import { useAuth } from '@/components/AuthProvider';
+import { DateTimeDisplay } from '@/components/DateTimeDisplay';
 
 type TableData = {
   id: string;
@@ -28,54 +29,7 @@ export default function TableBoardPage() {
   const [openingTable, setOpeningTable] = useState<string | null>(null);
   const [selectedTableForQr, setSelectedTableForQr] = useState<TableData | null>(null);
   const [prevTotalItems, setPrevTotalItems] = useState<number | null>(null);
-
-  // Offer states
-  const [showOfferModal, setShowOfferModal] = useState(false);
-  const [offerActive, setOfferActive] = useState(true);
-  const [offerTitle, setOfferTitle] = useState('');
-  const [offerDescription, setOfferDescription] = useState('');
-  const [offerBadge, setOfferBadge] = useState('');
-  const [offerPrice, setOfferPrice] = useState(149);
-  const [offerImageUrl, setOfferImageUrl] = useState('/offer_combo.jpg');
-  const [savingOffer, setSavingOffer] = useState(false);
-
-  const loadOfferDetails = async () => {
-    try {
-      const offer = await db.getOffer();
-      if (offer) {
-        setOfferActive(offer.is_active);
-        setOfferTitle(offer.title);
-        setOfferDescription(offer.description);
-        setOfferBadge(offer.badge);
-        setOfferPrice(offer.price);
-        setOfferImageUrl(offer.image_url);
-      }
-      setShowOfferModal(true);
-    } catch (err) {
-      console.error('Error loading offer details:', err);
-    }
-  };
-
-  const saveOfferDetails = async () => {
-    setSavingOffer(true);
-    try {
-      await db.saveOffer({
-        is_active: offerActive,
-        title: offerTitle,
-        description: offerDescription,
-        badge: offerBadge,
-        price: Number(offerPrice),
-        image_url: offerImageUrl,
-      });
-      alert('Running offer updated successfully!');
-      setShowOfferModal(false);
-    } catch (err) {
-      console.error('Error saving offer details:', err);
-      alert('Failed to save offer.');
-    } finally {
-      setSavingOffer(false);
-    }
-  };
+  const [isLocked, setIsLocked] = useState(false);
 
   const playOrderSound = () => {
     try {
@@ -204,6 +158,11 @@ export default function TableBoardPage() {
   const fetchTables = async () => {
     try {
       await db.sync();
+      
+      const todayDate = new Date().toLocaleDateString('en-CA'); // YYYY-MM-DD
+      const status = await db.getSystemStatus(todayDate);
+      setIsLocked(status.isLocked);
+
       const data = await db.getTables();
       setTables(data as TableData[]);
 
@@ -260,6 +219,11 @@ export default function TableBoardPage() {
   const handleTableClick = async (table: TableData) => {
     if (openingTable) return;
 
+    if (isLocked) {
+      alert("System is Locked. Please Open the Day from Inventory -> Day Close System to take orders.");
+      return;
+    }
+
     if (table.activeOrder) {
       // Already has an order — go straight to it
       router.push(`/tables/${table.id}`);
@@ -280,17 +244,23 @@ export default function TableBoardPage() {
   const freeCount = tables.filter(t => t.status === 'free').length;
 
   return (
-    <div className="min-h-screen bg-background">
+    <div className="min-h-screen bg-background flex flex-col">
+      {isLocked && (
+        <div className="bg-red-600 text-white px-4 py-2 text-center text-sm font-bold shadow-md z-50 animate-in slide-in-from-top flex items-center justify-center gap-2">
+          <span>⚠️ System is Locked. Day is not open or already closed.</span>
+          <Link href="/inventory" className="underline hover:text-white/80">Open Day</Link>
+        </div>
+      )}
       {/* Header */}
       <header className="bg-primary text-primary-foreground sticky top-0 z-40 shadow-md">
         <div className="mx-auto max-w-5xl px-3 py-3 flex items-center justify-between gap-2">
-          <div className="flex items-center gap-2 min-w-0">
+          <Link href="/" className="flex items-center gap-2 min-w-0 hover:opacity-80 transition-opacity cursor-pointer">
             <Coffee className="h-5 w-5 shrink-0" />
             <div className="min-w-0">
               <h1 className="font-script text-2xl sm:text-3xl leading-tight truncate">Cafe Blossom</h1>
               <p className="text-[9px] sm:text-[10px] uppercase tracking-widest opacity-70 font-sans -mt-0.5 hidden sm:block">Ishvarpur · Staff Portal</p>
             </div>
-          </div>
+          </Link>
           <div className="flex items-center gap-1 sm:gap-2 shrink-0">
             <Link
               href="/inventory"
@@ -299,13 +269,13 @@ export default function TableBoardPage() {
               <TrendingUp className="h-4 w-4 shrink-0" />
               <span className="hidden sm:inline">Profit &amp; Inventory</span>
             </Link>
-            <button
-              onClick={loadOfferDetails}
+            <Link
+              href="/offers"
               className="flex items-center gap-1 sm:gap-1.5 bg-primary-foreground/15 hover:bg-primary-foreground/25 text-primary-foreground px-2 sm:px-3 py-2 rounded-lg text-xs font-medium font-sans transition-colors cursor-pointer"
             >
               <Percent className="h-4 w-4 shrink-0" />
               <span className="hidden sm:inline">Running Offer</span>
-            </button>
+            </Link>
             <Link
               href="/history"
               className="flex items-center gap-1 sm:gap-1.5 bg-primary-foreground/15 hover:bg-primary-foreground/25 text-primary-foreground px-2 sm:px-3 py-2 rounded-lg text-xs font-medium font-sans transition-colors"
@@ -321,6 +291,9 @@ export default function TableBoardPage() {
               <LogOut className="h-4 w-4 shrink-0" />
               <span className="hidden md:inline">Logout</span>
             </button>
+            <div className="border-l border-primary-foreground/20 pl-2 sm:pl-3 ml-1 sm:ml-2">
+              <DateTimeDisplay />
+            </div>
           </div>
         </div>
       </header>
@@ -492,137 +465,6 @@ export default function TableBoardPage() {
         </div>
       )}
 
-      {/* Running Offer Customization Modal */}
-      {showOfferModal && (
-        <div
-          className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4 overflow-y-auto"
-          onClick={() => setShowOfferModal(false)}
-        >
-          <div
-            className="bg-card border border-border rounded-2xl shadow-2xl p-6 w-full max-w-md flex flex-col gap-4 max-h-[90vh] overflow-y-auto"
-            onClick={(e) => e.stopPropagation()}
-          >
-            {/* Header */}
-            <div className="border-b border-border pb-3">
-              <h3 className="text-lg font-serif font-bold text-foreground">🔥 Customize Running Offer</h3>
-              <p className="text-xs text-muted-foreground font-sans mt-0.5">
-                Set up the combo meal that customers see first on the digital menu.
-              </p>
-            </div>
-
-            {/* Inputs */}
-            <div className="space-y-3.5 py-1">
-              {/* Active Toggle */}
-              <div className="flex items-center justify-between bg-muted/40 border border-border rounded-xl px-4 py-3">
-                <div>
-                  <p className="text-sm font-bold text-foreground font-sans">Show Banner on Menu</p>
-                  <p className="text-[10px] text-muted-foreground font-sans">Toggle visibility for customers</p>
-                </div>
-                <button
-                  type="button"
-                  onClick={() => setOfferActive(p => !p)}
-                  className={`relative w-12 h-7 rounded-full transition-colors duration-200 cursor-pointer ${
-                    offerActive ? 'bg-primary' : 'bg-muted-foreground/30'
-                  }`}
-                >
-                  <div className={`absolute top-1 w-5 h-5 bg-white rounded-full shadow transition-all duration-200 ${
-                    offerActive ? 'left-6' : 'left-1'
-                  }`} />
-                </button>
-              </div>
-
-              {/* Badge */}
-              <div>
-                <label className="block text-xs font-semibold uppercase tracking-wider text-muted-foreground mb-1.5 font-sans">
-                  Offer Badge Text
-                </label>
-                <input
-                  type="text"
-                  value={offerBadge}
-                  onChange={(e) => setOfferBadge(e.target.value)}
-                  placeholder="e.g. SPECIAL COMBO, 40% OFF"
-                  className="w-full px-3 py-2 text-sm font-sans bg-background text-foreground border border-border rounded-lg focus:border-primary focus:outline-none"
-                />
-              </div>
-
-              {/* Title */}
-              <div>
-                <label className="block text-xs font-semibold uppercase tracking-wider text-muted-foreground mb-1.5 font-sans">
-                  Offer Title
-                </label>
-                <input
-                  type="text"
-                  value={offerTitle}
-                  onChange={(e) => setOfferTitle(e.target.value)}
-                  placeholder="e.g. Burger, Cold Coffee & Fries Combo"
-                  className="w-full px-3 py-2 text-sm font-sans bg-background text-foreground border border-border rounded-lg focus:border-primary focus:outline-none"
-                />
-              </div>
-
-              {/* Description */}
-              <div>
-                <label className="block text-xs font-semibold uppercase tracking-wider text-muted-foreground mb-1.5 font-sans">
-                  Description
-                </label>
-                <textarea
-                  rows={3}
-                  value={offerDescription}
-                  onChange={(e) => setOfferDescription(e.target.value)}
-                  placeholder="Describe the items in the combo..."
-                  className="w-full px-3 py-2 text-sm font-sans bg-background text-foreground border border-border rounded-lg focus:border-primary focus:outline-none resize-none"
-                />
-              </div>
-
-              {/* Price */}
-              <div>
-                <label className="block text-xs font-semibold uppercase tracking-wider text-muted-foreground mb-1.5 font-sans">
-                  Combo Price (₹)
-                </label>
-                <input
-                  type="number"
-                  value={offerPrice}
-                  onChange={(e) => setOfferPrice(Number(e.target.value))}
-                  placeholder="149"
-                  className="w-full px-3 py-2 text-sm font-sans bg-background text-foreground border border-border rounded-lg focus:border-primary focus:outline-none"
-                />
-              </div>
-
-              {/* Image URL */}
-              <div>
-                <label className="block text-xs font-semibold uppercase tracking-wider text-muted-foreground mb-1.5 font-sans">
-                  Image Path / URL
-                </label>
-                <input
-                  type="text"
-                  value={offerImageUrl}
-                  onChange={(e) => setOfferImageUrl(e.target.value)}
-                  placeholder="e.g. /offer_combo.jpg"
-                  className="w-full px-3 py-2 text-sm font-sans bg-background text-foreground border border-border rounded-lg focus:border-primary focus:outline-none"
-                />
-              </div>
-            </div>
-
-            {/* Actions */}
-            <div className="flex gap-3 w-full border-t border-border pt-4 mt-1">
-              <button
-                type="button"
-                onClick={() => setShowOfferModal(false)}
-                className="flex-1 py-2.5 rounded-xl border border-border text-sm font-semibold text-muted-foreground hover:bg-muted transition-colors cursor-pointer font-sans"
-              >
-                Cancel
-              </button>
-              <button
-                type="button"
-                disabled={savingOffer}
-                onClick={saveOfferDetails}
-                className="flex-1 py-2.5 rounded-xl bg-primary text-primary-foreground text-sm font-semibold hover:bg-primary/90 transition-colors cursor-pointer font-sans flex items-center justify-center gap-1.5 disabled:opacity-50"
-              >
-                {savingOffer ? 'Saving...' : 'Save Offer'}
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
     </div>
   );
 }
