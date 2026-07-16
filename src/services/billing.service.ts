@@ -196,7 +196,7 @@ export const billingService = {
     const dashes = '\u2504'.repeat(W);
 
     let text = '';
-    text += `${line}\n    🌸  *CAFE BLOSSOM*\n         Ishvarpur\n${line}\n📅 ${date}  ⏰ ${time}\n`;
+    text += `${line}\n    🌸  *CAFE BLOSSOM*\n         Ishwarpur\n${line}\n📅 ${date}  ⏰ ${time}\n`;
     
     const tNum = table.table_number;
     const isParcel = bill.parcel_charge > 0;

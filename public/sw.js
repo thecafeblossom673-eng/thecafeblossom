@@ -8,6 +8,7 @@ self.addEventListener('activate', (event) => {
 });
 
 self.addEventListener('fetch', (event) => {
-  // Direct pass-through to ensure fresh data always and bypass next.js offline conflicts
-  event.respondWith(fetch(event.request));
+  // Do nothing. Let the browser handle all network requests normally.
+  // This completely eliminates any "Failed to fetch" errors from the Service Worker.
+  return;
 });

@@ -84,14 +84,18 @@ export default function OffersPage() {
     const menuItem = menuItems.find(i => i.id === selectedMenuItemId);
     if (!menuItem) return;
     
-    setIncludedItems(prev => [
-      ...prev,
-      {
-        menu_item_id: menuItem.id,
-        name: menuItem.name,
-        original_price: menuItem.price
-      }
-    ]);
+    setIncludedItems(prev => {
+      const newItems = [
+        ...prev,
+        {
+          menu_item_id: menuItem.id,
+          name: menuItem.name,
+          original_price: menuItem.price
+        }
+      ];
+      setOfferDescription(newItems.map(item => item.name).join(' + '));
+      return newItems;
+    });
     
     // Auto-calculate the total original price when adding items
     const currentTotal = includedItems.reduce((sum, item) => sum + item.original_price, 0);
@@ -106,26 +110,42 @@ export default function OffersPage() {
   };
 
   const handleRemoveIncludedItem = (index: number) => {
-    setIncludedItems(prev => prev.filter((_, i) => i !== index));
+    setIncludedItems(prev => {
+      const newItems = prev.filter((_, i) => i !== index);
+      if (newItems.length > 0) {
+        setOfferDescription(newItems.map(item => item.name).join(' + '));
+      } else {
+        setOfferDescription('');
+      }
+      return newItems;
+    });
   };
   
   const handleUpdateIncludedItem = (index: number, field: keyof IncludedItem, value: any) => {
     setIncludedItems(prev => {
       const updated = [...prev];
       updated[index] = { ...updated[index], [field]: value };
+      if (field === 'name') {
+        setOfferDescription(updated.map(item => item.name).join(' + '));
+      }
       return updated;
     });
   };
 
   const saveOfferDetails = async () => {
+    if (!offerTitle.trim() || !offerDescription.trim() || !offerBadge.trim()) {
+      showAlert('Validation Error', 'Please fill in the Offer Title, Badge Text, and Description.');
+      return;
+    }
+
     setSavingOffer(true);
     setSuccessMsg('');
     try {
       await db.saveOffer({
         is_active: offerActive,
-        title: offerTitle,
-        description: offerDescription,
-        badge: offerBadge,
+        title: offerTitle.trim(),
+        description: offerDescription.trim(),
+        badge: offerBadge.trim(),
         price: Number(offerPrice),
         original_price: originalPrice ? Number(originalPrice) : undefined,
         image_url: offerImageUrl,

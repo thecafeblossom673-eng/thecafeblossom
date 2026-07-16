@@ -385,7 +385,7 @@ export default function OrderEntryPage({ params }: { params: Promise<{ id: strin
     let text = '';
     text += `${line}\n`;
     text += `    🌸  *CAFE BLOSSOM*\n`;
-    text += `         Ishvarpur\n`;
+    text += `         Ishwarpur\n`;
     text += `${line}\n`;
     text += `📅 ${date}  ⏰ ${time}\n`;
     const displayTable = tableNumber === 9 ? 'Zomato' : tableNumber === 10 ? 'Parcel' : `${tableNumber}`;

@@ -138,7 +138,7 @@ export default function TableBoardPage() {
           <body>
             <div class="container">
               <div class="logo">🌸 CAFE BLOSSOM</div>
-              <div class="sublogo">Ishvarpur</div>
+              <div class="sublogo">Ishwarpur</div>
               <h1 class="table-title">TABLE ${table.table_number}</h1>
               <img class="qr-img" src="${qrCodeUrl}" alt="Table ${table.table_number} QR Code" />
               <div class="instruction">Scan to view menu & order food directly from your phone!</div>
@@ -258,7 +258,7 @@ export default function TableBoardPage() {
             <Coffee className="h-5 w-5 shrink-0" />
             <div className="min-w-0">
               <h1 className="font-script text-2xl sm:text-3xl leading-tight truncate">Cafe Blossom</h1>
-              <p className="text-[9px] sm:text-[10px] uppercase tracking-widest opacity-70 font-sans -mt-0.5 hidden sm:block">Ishvarpur · Staff Portal</p>
+              <p className="text-[9px] sm:text-[10px] uppercase tracking-widest opacity-70 font-sans -mt-0.5 hidden sm:block">Ishwarpur · Staff Portal</p>
             </div>
           </Link>
           <div className="flex items-center gap-1 sm:gap-2 shrink-0">

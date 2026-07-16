@@ -184,7 +184,7 @@ export default function BillHistoryPage() {
             <Coffee className="h-5 w-5" />
             <div>
               <h1 className="font-serif text-xl font-bold leading-tight">Bill History</h1>
-              <p className="text-[10px] uppercase tracking-widest opacity-70 font-sans">Cafe Blossom · Ishvarpur</p>
+              <p className="text-[10px] uppercase tracking-widest opacity-70 font-sans">Cafe Blossom · Ishwarpur</p>
             </div>
           </Link>
           <div className="ml-auto border-l border-primary-foreground/20 pl-3">

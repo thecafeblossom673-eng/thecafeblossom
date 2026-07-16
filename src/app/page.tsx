@@ -58,7 +58,7 @@ export default function CustomerLandingPage() {
             Cafe Blossom
           </h1>
           <p className="text-[11px] font-sans tracking-[0.25em] uppercase text-white/75 font-semibold mb-4">
-            Ishvarpur
+            Ishwarpur
           </p>
 
           <div className="h-[1px] w-24 bg-gradient-to-r from-transparent via-accent to-transparent mb-6" />
@@ -90,7 +90,7 @@ export default function CustomerLandingPage() {
 
       {/* Footer Area */}
       <footer className="relative z-10 w-full text-center py-6 text-xs text-white/40 font-sans tracking-wide">
-        <p>© {new Date().getFullYear()} Cafe Blossom · Ishvarpur. All rights reserved.</p>
+        <p>© {new Date().getFullYear()} Cafe Blossom · Ishwarpur. All rights reserved.</p>
         <p className="text-[10px] mt-1 opacity-60">Call us: 7038411001 · Visit on Instagram @cafe_blossom</p>
       </footer>
 

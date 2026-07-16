@@ -39,7 +39,7 @@ export default function LoginPage() {
             Cafe Blossom
           </h2>
           <p className="mt-1 text-center text-sm font-sans tracking-widest uppercase text-muted-foreground">
-            Staff Portal — Ishvarpur
+            Staff Portal — Ishwarpur
           </p>
         </Link>
 
