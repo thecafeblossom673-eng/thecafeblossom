@@ -1,3 +1,4 @@
+import mongoose from 'mongoose';
 import dbConnect from '../lib/mongodb';
 import Order from '../models/Order';
 import OrderItem from '../models/OrderItem';
@@ -5,10 +6,27 @@ import Table from '../models/Table';
 import MenuItem from '../models/MenuItem';
 import Offer from '../models/Offer';
 
+// Helper to safely resolve a table document whether passed a valid ObjectId string, "t-2", or table_number string ("2")
+async function resolveTable(tableIdOrNumber: string): Promise<any | null> {
+  await dbConnect();
+  if (mongoose.Types.ObjectId.isValid(tableIdOrNumber)) {
+    const byId = await Table.findById(tableIdOrNumber);
+    if (byId) return byId;
+  }
+  const num = parseInt(tableIdOrNumber.replace(/\D/g, ''), 10);
+  if (!isNaN(num)) {
+    return await Table.findOne({ table_number: num });
+  }
+  return null;
+}
+
 export const orderService = {
   async getActiveOrder(tableId: string): Promise<any | null> {
     await dbConnect();
-    const order = await Order.findOne({ table_id: tableId, status: { $ne: 'closed' } }).lean();
+    const tableDoc = await resolveTable(tableId);
+    const resolvedTableId = tableDoc ? tableDoc._id.toString() : tableId;
+
+    const order = await Order.findOne({ table_id: resolvedTableId, status: { $ne: 'closed' } }).lean();
     if (!order) return null;
 
     const items = await OrderItem.find({ order_id: order._id }).lean();
@@ -74,14 +92,27 @@ export const orderService = {
   async createOrder(tableId: string): Promise<any> {
     await dbConnect();
     
-    // Check if table exists
-    const table = await Table.findById(tableId);
+    const table = await resolveTable(tableId);
     if (!table) throw new Error('Table not found');
 
-    const newOrder = await Order.create({ table_id: tableId, status: 'open' });
+    const realTableId = table._id.toString();
+
+    // Return existing active order if table is already open
+    const existingOrder = await Order.findOne({ table_id: realTableId, status: { $ne: 'closed' } });
+    if (existingOrder) {
+      return {
+        id: existingOrder._id.toString(),
+        table_id: existingOrder.table_id.toString(),
+        status: existingOrder.status,
+        customer_phone: existingOrder.customer_phone,
+        created_at: existingOrder.created_at
+      };
+    }
+
+    const newOrder = await Order.create({ table_id: realTableId, status: 'open' });
     
     // Update table status
-    await Table.updateOne({ _id: tableId }, { status: 'occupied' });
+    await Table.updateOne({ _id: realTableId }, { status: 'occupied' });
 
     return {
       id: newOrder._id.toString(),
@@ -94,49 +125,86 @@ export const orderService = {
 
   async addOrderItem(orderId: string, menuItemId: string, quantity: number, notes: string | null, priceAtOrder: number): Promise<void> {
     await dbConnect();
-    
-    const existing = await OrderItem.findOne({ order_id: orderId, menu_item_id: menuItemId });
+
+    const targetOrderId = mongoose.Types.ObjectId.isValid(orderId) 
+      ? new mongoose.Types.ObjectId(orderId) 
+      : orderId;
+
+    const existing = await OrderItem.findOne({ order_id: targetOrderId, menu_item_id: menuItemId });
     if (existing) {
       existing.quantity += quantity;
-      if (notes) existing.notes = notes;
+      if (notes !== null) existing.notes = notes;
       await existing.save();
     } else {
       await OrderItem.create({
-        order_id: orderId,
+        order_id: targetOrderId,
         menu_item_id: menuItemId,
         quantity,
         price_at_order: priceAtOrder,
-        notes
+        notes: notes || ''
       });
     }
   },
 
-  async updateOrderItem(itemId: string, quantity: number, notes: string | null): Promise<void> {
+  async updateOrderItemQuantity(itemId: string, quantity: number): Promise<void> {
     await dbConnect();
     if (quantity <= 0) {
       await OrderItem.deleteOne({ _id: itemId });
     } else {
-      await OrderItem.updateOne({ _id: itemId }, { quantity, notes });
+      await OrderItem.updateOne({ _id: itemId }, { quantity });
     }
   },
 
-  async deleteOrderItem(itemId: string): Promise<void> {
+  async updateOrderItemNotes(itemId: string, notes: string): Promise<void> {
     await dbConnect();
-    await OrderItem.deleteOne({ _id: itemId });
+    await OrderItem.updateOne({ _id: itemId }, { notes });
   },
 
-  async unlockOrder(orderId: string): Promise<void> {
+  async setCustomerPhone(orderId: string, phone: string): Promise<void> {
     await dbConnect();
-    await Order.updateOne({ _id: orderId }, { status: 'open' });
+    await Order.updateOne({ _id: orderId }, { customer_phone: phone });
   },
 
   async cancelOrder(orderId: string): Promise<void> {
     await dbConnect();
     const order = await Order.findById(orderId);
     if (!order) return;
-    
+
     await OrderItem.deleteMany({ order_id: orderId });
-    await Table.updateOne({ _id: order.table_id }, { status: 'free' });
     await Order.deleteOne({ _id: orderId });
+    
+    // Check if table has any other active orders
+    const remaining = await Order.findOne({ table_id: order.table_id, status: { $ne: 'closed' } });
+    if (!remaining) {
+      await Table.updateOne({ _id: order.table_id }, { status: 'free' });
+    }
+  },
+
+  async updateOrderItem(itemId: string, quantity: number, notes: string | null): Promise<void> {
+    await dbConnect();
+    const query = mongoose.Types.ObjectId.isValid(itemId) 
+      ? { _id: itemId } 
+      : { menu_item_id: itemId };
+
+    if (quantity <= 0) {
+      await OrderItem.deleteOne(query);
+    } else {
+      const updateData: any = { quantity };
+      if (notes !== null) updateData.notes = notes;
+      await OrderItem.updateOne(query, updateData);
+    }
+  },
+
+  async deleteOrderItem(itemId: string): Promise<void> {
+    await dbConnect();
+    const query = mongoose.Types.ObjectId.isValid(itemId) 
+      ? { _id: itemId } 
+      : { menu_item_id: itemId };
+    await OrderItem.deleteOne(query);
+  },
+
+  async unlockOrder(orderId: string): Promise<void> {
+    await dbConnect();
+    await Order.updateOne({ _id: orderId }, { status: 'open' });
   }
 };

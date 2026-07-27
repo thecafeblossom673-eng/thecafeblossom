@@ -1,3 +1,4 @@
+import mongoose from 'mongoose';
 import dbConnect from '../lib/mongodb';
 import Table from '../models/Table';
 import Order from '../models/Order';
@@ -52,7 +53,16 @@ export const tableService = {
 
   async getTable(tableId: string): Promise<TableType | null> {
     await dbConnect();
-    const table = await Table.findById(tableId).lean();
+    let table = null;
+    if (mongoose.Types.ObjectId.isValid(tableId)) {
+      table = await Table.findById(tableId).lean();
+    }
+    if (!table) {
+      const num = parseInt(tableId.replace(/\D/g, ''), 10);
+      if (!isNaN(num)) {
+        table = await Table.findOne({ table_number: num }).lean();
+      }
+    }
     if (!table) return null;
     return {
       id: table._id.toString(),

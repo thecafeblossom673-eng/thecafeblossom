@@ -1,8 +1,10 @@
 'use client';
 
-import React, { useEffect, useState, useRef, Suspense } from 'react';
+import React, { useEffect, useState, useRef, Suspense, useMemo } from 'react';
+import { playSuccessTone } from '@/lib/utils/sound';
 import { useSearchParams, useRouter } from 'next/navigation';
 import { db } from '@/lib/db';
+import { clientCache } from '@/lib/cache';
 import { MenuItem } from '@/types';
 import { Coffee, ArrowLeft, Plus, Minus, ShoppingBag, X, CheckCircle, AlertTriangle, Truck, MapPin, Phone } from 'lucide-react';
 import Link from 'next/link';
@@ -78,13 +80,37 @@ function OrderMenuContent() {
   const showAlert = (title: string, message: string) => setModalConfig({isOpen: true, title, message, type: 'alert'});
   const closeModal = () => setModalConfig(prev => ({...prev, isOpen: false}));
 
-  const [runningOffer, setRunningOffer] = useState<any>(null);
-  const [tables, setTables] = useState<any[]>([]);
-  const [categories, setCategories] = useState<any[]>([]);
-  const [menuItems, setMenuItems] = useState<MenuItem[]>([]);
-  const [activeCategory, setActiveCategory] = useState<string>('');
+  const [runningOffers, setRunningOffers] = useState<any[]>(() => {
+    if (typeof window !== 'undefined') return clientCache.get<any[]>('order_offers') || [];
+    return [];
+  });
+  const [tables, setTables] = useState<any[]>(() => {
+    if (typeof window !== 'undefined') return clientCache.get<any[]>('admin_tables') || [];
+    return [];
+  });
+  const [categories, setCategories] = useState<any[]>(() => {
+    if (typeof window !== 'undefined') return clientCache.get<any[]>('order_cats') || [];
+    return [];
+  });
+  const [menuItems, setMenuItems] = useState<MenuItem[]>(() => {
+    if (typeof window !== 'undefined') return clientCache.get<MenuItem[]>('order_items') || [];
+    return [];
+  });
+  const [activeCategory, setActiveCategory] = useState<string>(() => {
+    if (typeof window !== 'undefined') {
+      const cachedCats = clientCache.get<any[]>('order_cats');
+      if (cachedCats && cachedCats.length > 0) return cachedCats[0].id;
+    }
+    return '';
+  });
 
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading] = useState(() => {
+    if (typeof window !== 'undefined') {
+      const cachedItems = clientCache.get<MenuItem[]>('order_items');
+      return !cachedItems || cachedItems.length === 0;
+    }
+    return false;
+  });
   const [placingOrder, setPlacingOrder] = useState(false);
   const [orderSuccess, setOrderSuccess] = useState(false);
 
@@ -112,52 +138,53 @@ function OrderMenuContent() {
   useEffect(() => {
     const init = async () => {
       try {
-        await db.sync();
         const todayDate = new Date().toLocaleDateString('en-CA');
-        const [allTables, cats, items, offer, status] = await Promise.all([
-          db.getTables(),
+        const [cats, items, offersData, status] = await Promise.all([
           db.getCategories(),
           db.getMenuItems(),
-          db.getOffer(),
+          db.getOffers ? db.getOffers() : db.getOffer(),
           db.getSystemStatus(todayDate),
         ]);
-        setTables(allTables);
+        const offersList = Array.isArray(offersData) ? offersData : (offersData ? [offersData] : []);
         setIsLocked(status.isLocked);
-        setRunningOffer(offer);
+        setRunningOffers(offersList);
 
         let finalCats = [...cats];
         let finalItems = [...items];
 
-        if (offer && offer.is_active) {
+        const activeOffers = offersList.filter((o: any) => o.is_active);
+        if (activeOffers.length > 0) {
           const offersCat = { id: 'cat-offers', name: 'Offers 🔥', sort_order: 0 };
           finalCats.unshift(offersCat);
-          finalItems.unshift({
-            id: 'running-offer',
-            category_id: 'cat-offers',
-            name: offer.title,
-            description: offer.description,
-            price: offer.price,
-            is_veg: true,
-            is_available: true,
-            sort_order: -100
-          } as MenuItem);
+          activeOffers.forEach((off: any, idx: number) => {
+            finalItems.unshift({
+              id: `offer-${off.id || off._id}`,
+              category_id: 'cat-offers',
+              name: off.title,
+              description: off.description,
+              price: off.price,
+              is_veg: true,
+              is_available: true,
+              sort_order: -100 + idx
+            } as MenuItem);
+          });
         }
 
         setCategories(finalCats);
         setMenuItems(finalItems);
+        setActiveCategory(prev => (prev && finalCats.some(c => c.id === prev) ? prev : (finalCats[0]?.id || '')));
 
-        if (finalCats.length > 0) {
-          setActiveCategory(finalCats[0].id);
-        }
+        clientCache.set('order_cats', finalCats);
+        clientCache.set('order_items', finalItems);
+        clientCache.set('order_offers', offersList);
 
         // Determine table from URL parameter (QR code scan)
         const tableParam = searchParams.get('table');
         if (tableParam) {
           const tNum = parseInt(tableParam, 10);
-          const matchedTable = allTables.find(t => t.table_number === tNum);
-          if (matchedTable && tNum <= 8) {
+          if (!isNaN(tNum) && tNum > 0 && tNum <= 10) {
             setTableNumber(tNum);
-            setTableId(matchedTable.id);
+            setTableId(`t-${tNum}`);
             setTableLockedByQR(true); // Lock — came from QR scan
           } else {
             setShowTableModal(true);
@@ -165,14 +192,24 @@ function OrderMenuContent() {
         } else {
           setShowTableModal(true);
         }
-      } catch (err) {
-        console.error('Initialization error:', err);
       } finally {
         setLoading(false);
       }
     };
     init();
   }, [searchParams]);
+
+  const openTableModal = async () => {
+    setShowTableModal(true);
+    if (tables.length === 0) {
+      try {
+        const allTables = await db.getTables();
+        setTables(allTables);
+      } catch (err) {
+        console.error('Error fetching tables:', err);
+      }
+    }
+  };
 
   const handleSelectTable = (tableNum: number) => {
     const matchedTable = tables.find(t => t.table_number === tableNum);
@@ -218,42 +255,19 @@ function OrderMenuContent() {
     });
   };
 
-  const getCartTotal = () => {
+  const cartTotal = useMemo(() => {
+    const itemMap = new Map(menuItems.map(m => [m.id, m.price]));
     return Object.entries(cart).reduce((sum, [itemId, cartItem]) => {
-      const item = menuItems.find(mi => mi.id === itemId);
-      return sum + (item?.price || 0) * cartItem.quantity;
+      return sum + (itemMap.get(itemId) || 0) * cartItem.quantity;
     }, 0);
-  };
+  }, [cart, menuItems]);
 
-  const getCartItemsCount = () => {
+  const cartItemsCount = useMemo(() => {
     return Object.values(cart).reduce((sum, item) => sum + item.quantity, 0);
-  };
+  }, [cart]);
 
   const playLocalSuccessSound = () => {
-    try {
-      const AudioContextClass = window.AudioContext || (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
-      if (!AudioContextClass) return;
-      const ctx = new AudioContextClass();
-
-      const playNote = (freq: number, start: number, duration: number) => {
-        const osc = ctx.createOscillator();
-        const gain = ctx.createGain();
-        osc.type = 'sine';
-        osc.frequency.setValueAtTime(freq, ctx.currentTime + start);
-        gain.gain.setValueAtTime(0.12, ctx.currentTime + start);
-        gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + start + duration);
-        osc.connect(gain);
-        gain.connect(ctx.destination);
-        osc.start(ctx.currentTime + start);
-        osc.stop(ctx.currentTime + start + duration);
-      };
-
-      playNote(523.25, 0, 0.3);      // C5
-      playNote(659.25, 0.08, 0.35);  // E5
-      playNote(783.99, 0.16, 0.45);  // G5
-    } catch (e) {
-      console.error('Failed to play local success chime:', e);
-    }
+    playSuccessTone();
   };
 
   const placeOrder = async () => {
@@ -323,7 +337,7 @@ function OrderMenuContent() {
       });
       setLastPlacedSummary({
         items: summaryItems,
-        total: getCartTotal(),
+        total: cartTotal,
         isDelivery: isHomeDelivery,
         deliveryAddress: isHomeDelivery ? deliveryAddress.trim() : undefined,
       });
@@ -482,8 +496,6 @@ function OrderMenuContent() {
   }
 
   const catItems = menuItems.filter(item => item.category_id === activeCategory && item.is_available);
-  const cartItemsCount = getCartItemsCount();
-  const cartTotal = getCartTotal();
 
   return (
     <div 
@@ -519,7 +531,7 @@ function OrderMenuContent() {
               </div>
             ) : (
               <button
-                onClick={() => setShowTableModal(true)}
+                onClick={openTableModal}
                 className="bg-primary-foreground/15 hover:bg-primary-foreground/25 px-2.5 py-1 rounded-md text-[10px] font-bold font-sans uppercase tracking-wide transition-colors cursor-pointer"
               >
                 Change
@@ -562,74 +574,80 @@ function OrderMenuContent() {
 
       {/* Menu items listing */}
       <main className="flex-1 overflow-y-auto px-4 py-4 space-y-3 max-w-2xl mx-auto w-full z-10">
-        {/* Special Running Offer Hero Banner */}
-        {runningOffer && runningOffer.is_active && (
-          <div className="relative rounded-2xl overflow-hidden border border-white/80 shadow-lg bg-white/95 mb-5">
-            <div className="relative h-44 w-full">
-              <Image 
-                src={runningOffer.image_url || '/offer_combo.jpg'} 
-                alt={runningOffer.title} 
-                fill 
-                className="object-cover"
-                sizes="(max-width: 768px) 100vw, 672px"
-                priority
-              />
-              {/* Soft overlay gradient to make text readable */}
-              <div className="absolute inset-0 bg-gradient-to-t from-black/85 via-black/40 to-transparent" />
-              
-              {/* Badges on top */}
-              <div className="absolute top-3 left-3 bg-red-600 text-white text-[10px] font-black uppercase tracking-widest px-2.5 py-1 rounded-md animate-pulse">
-                {runningOffer.badge || "COMBO OFFER"}
-              </div>
-            </div>
-            
-            {/* Offer details & CTA */}
-            <div className="p-4 space-y-3">
-              <div>
-                <h3 className="font-serif font-black text-lg text-slate-900 leading-tight">
-                  {runningOffer.title}
-                </h3>
-                <p className="text-xs text-slate-600 mt-1 font-sans leading-relaxed line-clamp-2">
-                  {runningOffer.description}
-                </p>
-              </div>
+        {/* Special Running Offers Hero Banners */}
+        {runningOffers.filter(o => o.is_active).map(offer => {
+          const offerKey = `offer-${offer.id || offer._id}`;
+          const offerQty = cart[offerKey]?.quantity || 0;
 
-              {/* INCLUDED ITEMS LIST */}
-              {runningOffer.included_items && runningOffer.included_items.length > 0 && (
-                <div className="pt-2 pb-1 space-y-1.5 border-t border-dashed border-border/60">
-                  {runningOffer.included_items.map((item: any, idx: number) => (
-                    <div key={idx} className="flex items-center justify-between text-[11px] font-sans">
-                      <span className="flex items-center gap-1.5 text-slate-700">
-                        <span className="h-1 w-1 bg-primary rounded-full"></span>
-                        {item.name}
-                      </span>
-                      <span className="font-mono text-muted-foreground line-through opacity-70">
-                        ₹{item.original_price}
-                      </span>
-                    </div>
-                  ))}
-                </div>
-              )}
-              
-              <div className="flex items-center justify-between pt-1 border-t border-border/40">
-                <div className="flex items-baseline gap-1.5">
-                  <span className="font-mono font-black text-xl text-primary">₹{runningOffer.price}</span>
-                  {runningOffer.original_price && (
-                    <div className="flex items-center gap-1.5">
-                      <span className="text-[10px] text-muted-foreground line-through font-mono">₹{runningOffer.original_price}</span>
-                      <span className="text-[9px] font-bold text-green-600 bg-green-100 px-1.5 py-0.5 rounded-sm uppercase tracking-wider">
-                        {Math.round(((Number(runningOffer.original_price) - Number(runningOffer.price)) / Number(runningOffer.original_price)) * 100)}% OFF
-                      </span>
-                    </div>
-                  )}
-                </div>
+          return (
+            <div key={offer.id || offer._id} className="relative rounded-2xl overflow-hidden border border-white/80 shadow-lg bg-white/95 mb-5">
+              <div className="relative h-44 w-full">
+                <Image 
+                  src={offer.image_url || '/offer_combo.jpg'} 
+                  alt={offer.title} 
+                  fill 
+                  className="object-cover"
+                  sizes="(max-width: 768px) 100vw, 672px"
+                  priority
+                />
+                {/* Soft overlay gradient to make text readable */}
+                <div className="absolute inset-0 bg-gradient-to-t from-black/85 via-black/40 to-transparent" />
                 
-                {/* Add to Cart button */}
-                {(() => {
-                  const offerQty = cart['running-offer']?.quantity || 0;
-                  return offerQty === 0 ? (
+                {/* Badges on top */}
+                {offer.badge && (
+                  <div className="absolute top-3 left-3 bg-red-600 text-white text-[10px] font-black uppercase tracking-widest px-2.5 py-1 rounded-md animate-pulse">
+                    {offer.badge}
+                  </div>
+                )}
+              </div>
+              
+              {/* Offer details & CTA */}
+              <div className="p-4 space-y-3">
+                <div>
+                  <h3 className="font-serif font-black text-lg text-slate-900 leading-tight">
+                    {offer.title}
+                  </h3>
+                  <p className="text-xs text-slate-600 mt-1 font-sans leading-relaxed line-clamp-2">
+                    {offer.description}
+                  </p>
+                </div>
+
+                {/* INCLUDED ITEMS LIST */}
+                {offer.included_items && offer.included_items.length > 0 && (
+                  <div className="pt-2 pb-1 space-y-1.5 border-t border-dashed border-border/60">
+                    {offer.included_items.map((item: any, idx: number) => (
+                      <div key={idx} className="flex items-center justify-between text-[11px] font-sans">
+                        <span className="flex items-center gap-1.5 text-slate-700">
+                          <span className="h-1 w-1 bg-primary rounded-full"></span>
+                          {item.name}
+                        </span>
+                        <span className="font-mono text-muted-foreground line-through opacity-70">
+                          ₹{item.original_price}
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                )}
+                
+                <div className="flex items-center justify-between pt-1 border-t border-border/40">
+                  <div className="flex items-baseline gap-1.5">
+                    <span className="font-mono font-black text-xl text-primary">₹{offer.price}</span>
+                    {offer.original_price && (
+                      <div className="flex items-center gap-1.5">
+                        <span className="text-[10px] text-muted-foreground line-through font-mono">₹{offer.original_price}</span>
+                        {Number(offer.original_price) > Number(offer.price) && (
+                          <span className="text-[9px] font-bold text-green-600 bg-green-100 px-1.5 py-0.5 rounded-sm uppercase tracking-wider">
+                            {Math.round(((Number(offer.original_price) - Number(offer.price)) / Number(offer.original_price)) * 100)}% OFF
+                          </span>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                  
+                  {/* Add to Cart button */}
+                  {offerQty === 0 ? (
                     <button
-                      onClick={() => addToCart('running-offer')}
+                      onClick={() => addToCart(offerKey)}
                       className="flex items-center gap-1.5 bg-primary text-primary-foreground px-4.5 py-2.5 rounded-xl text-xs font-black font-sans uppercase tracking-wider hover:opacity-90 active:scale-95 transition-all cursor-pointer shadow"
                     >
                       <Plus className="h-4 w-4" /> Add Combo
@@ -637,25 +655,25 @@ function OrderMenuContent() {
                   ) : (
                     <div className="flex items-center gap-2">
                       <button
-                        onClick={() => updateCartQty('running-offer', offerQty - 1)}
+                        onClick={() => updateCartQty(offerKey, offerQty - 1)}
                         className="h-8 w-8 rounded-full border border-border bg-background flex items-center justify-center hover:bg-muted active:scale-90 transition-colors cursor-pointer"
                       >
                         <Minus className="h-4 w-4" />
                       </button>
                       <span className="w-6 text-center font-mono font-black text-sm text-foreground">{offerQty}</span>
                       <button
-                        onClick={() => updateCartQty('running-offer', offerQty + 1)}
+                        onClick={() => updateCartQty(offerKey, offerQty + 1)}
                         className="h-8 w-8 rounded-full border border-border bg-background flex items-center justify-center hover:bg-muted active:scale-90 transition-colors cursor-pointer"
                       >
                         <Plus className="h-4 w-4" />
                       </button>
                     </div>
-                  );
-                })()}
+                  )}
+                </div>
               </div>
             </div>
-          </div>
-        )}
+          );
+        })}
 
         {catItems.length === 0 ? (
           <p className="text-center text-sm text-muted-foreground py-12 font-sans bg-white/80 rounded-xl">No items available in this category.</p>

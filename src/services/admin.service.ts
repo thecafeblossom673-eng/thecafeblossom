@@ -1,8 +1,23 @@
+import { unstable_cache, revalidateTag, revalidatePath } from 'next/cache';
 import dbConnect from '../lib/mongodb';
 import DayClose from '../models/DayClose';
 import DayOpen from '../models/DayOpen';
 import Offer from '../models/Offer';
 import Review from '../models/Review';
+import LoginLog from '../models/LoginLog';
+
+const fetchOfferFromDb = async (): Promise<any | null> => {
+  await dbConnect();
+  const offer = await Offer.findOne({}).sort({ updatedAt: -1 }).lean();
+  if (!offer) return null;
+  return { ...offer, id: offer._id.toString() };
+};
+
+const getCachedOffer = unstable_cache(
+  fetchOfferFromDb,
+  ['running-offer'],
+  { revalidate: 3600, tags: ['offers'] }
+);
 
 export const adminService = {
   async getDayCloses(): Promise<any[]> {
@@ -92,18 +107,77 @@ export const adminService = {
     return { isOpen, isClosed, isLocked };
   },
 
-  async getOffer(): Promise<any | null> {
+  async getOffers(): Promise<any[]> {
     await dbConnect();
-    const offer = await Offer.findOne({}).sort({ updatedAt: -1 }).lean();
+    const offers = await Offer.find({}).sort({ updatedAt: -1 }).lean();
+    return offers.map(o => ({
+      ...o,
+      id: o._id.toString()
+    }));
+  },
+
+  async getOffer(id?: string): Promise<any | null> {
+    if (!id) return await getCachedOffer();
+    await dbConnect();
+    const offer = await Offer.findById(id).lean();
     if (!offer) return null;
-    return { ...offer, id: offer._id.toString() };
+    return { ...offer, id: (offer as any)._id.toString() };
+  },
+
+  async createOffer(offerData: any): Promise<any> {
+    await dbConnect();
+    const offer = await Offer.create(offerData);
+    try {
+      (revalidateTag as any)('offers');
+      (revalidateTag as any)('menu');
+      revalidatePath('/', 'layout');
+    } catch (e) {
+      console.error('Cache revalidation error:', e);
+    }
+    return { ...offer.toObject(), id: offer._id.toString() };
+  },
+
+  async updateOffer(id: string, offerData: any): Promise<any> {
+    await dbConnect();
+    const updated = await Offer.findByIdAndUpdate(id, offerData, { new: true }).lean();
+    try {
+      (revalidateTag as any)('offers');
+      (revalidateTag as any)('menu');
+      revalidatePath('/', 'layout');
+    } catch (e) {
+      console.error('Cache revalidation error:', e);
+    }
+    if (!updated) return null;
+    return { ...updated, id: (updated as any)._id.toString() };
+  },
+
+  async deleteOffer(id: string): Promise<void> {
+    await dbConnect();
+    await Offer.findByIdAndDelete(id);
+    try {
+      (revalidateTag as any)('offers');
+      (revalidateTag as any)('menu');
+      revalidatePath('/', 'layout');
+    } catch (e) {
+      console.error('Cache revalidation error:', e);
+    }
   },
 
   async saveOffer(offerData: any): Promise<void> {
     await dbConnect();
-    // Delete existing offers to maintain single active offer
-    await Offer.deleteMany({});
-    await Offer.create(offerData);
+    if (offerData.id || offerData._id) {
+      const offerId = offerData.id || offerData._id;
+      await Offer.findByIdAndUpdate(offerId, offerData);
+    } else {
+      await Offer.create(offerData);
+    }
+    try {
+      (revalidateTag as any)('offers');
+      (revalidateTag as any)('menu');
+      revalidatePath('/', 'layout');
+    } catch (e) {
+      console.error('Cache revalidation error:', e);
+    }
   },
 
   async getReviews(): Promise<any[]> {
@@ -118,5 +192,89 @@ export const adminService = {
   async addReview(reviewData: { rating: number; comment: string; table_number: number | null }): Promise<void> {
     await dbConnect();
     await Review.create(reviewData);
+  },
+
+  async recordLoginSession(deviceInfo: string, ipAddress: string): Promise<string> {
+    await dbConnect();
+    const session = await LoginLog.create({
+      user_role: 'Staff Portal',
+      device_info: deviceInfo || 'Unknown Device',
+      ip_address: ipAddress || 'Local Network',
+      login_at: new Date(),
+      last_seen_at: new Date(),
+      status: 'active'
+    });
+    return session._id.toString();
+  },
+
+  async sendSessionHeartbeat(sessionId: string): Promise<{ valid: boolean; forceLogout: boolean }> {
+    if (!sessionId) return { valid: false, forceLogout: false };
+    await dbConnect();
+    const session = await LoginLog.findById(sessionId);
+    if (!session) return { valid: false, forceLogout: false };
+
+    if (session.status === 'force_logged_out') {
+      return { valid: false, forceLogout: true };
+    }
+
+    if (session.status === 'logged_out') {
+      return { valid: false, forceLogout: false };
+    }
+
+    // Keep session active and refresh timestamp
+    session.status = 'active';
+    session.last_seen_at = new Date();
+    await session.save();
+    return { valid: true, forceLogout: false };
+  },
+
+  async recordLogoutSession(sessionId: string): Promise<void> {
+    if (!sessionId) return;
+    await dbConnect();
+    await LoginLog.findByIdAndUpdate(sessionId, {
+      status: 'logged_out',
+      logout_at: new Date()
+    });
+  },
+
+  async forceLogoutSession(sessionId: string): Promise<void> {
+    if (!sessionId) return;
+    await dbConnect();
+    await LoginLog.findByIdAndUpdate(sessionId, {
+      status: 'force_logged_out',
+      logout_at: new Date()
+    });
+  },
+
+  async getLoginSessions(): Promise<any[]> {
+    await dbConnect();
+    const now = Date.now();
+    const fifteenMinutesAgo = new Date(now - 15 * 60 * 1000);
+
+    // Auto-expire active sessions that missed heartbeats for over 15 minutes
+    await LoginLog.updateMany(
+      { status: 'active', last_seen_at: { $lt: fifteenMinutesAgo } },
+      { $set: { status: 'expired' } }
+    );
+
+    const logs = await LoginLog.find({}).sort({ login_at: -1 }).limit(100).lean();
+    return logs.map(l => ({
+      ...l,
+      id: l._id.toString()
+    }));
+  },
+
+  async clearLoginHistory(currentSessionId?: string): Promise<void> {
+    await dbConnect();
+    const filter: any = { status: { $ne: 'active' } };
+    if (currentSessionId) {
+      filter._id = { $ne: currentSessionId };
+    }
+    await LoginLog.deleteMany(filter);
+  },
+
+  async deleteLoginLog(sessionId: string): Promise<void> {
+    await dbConnect();
+    await LoginLog.findByIdAndDelete(sessionId);
   }
 };

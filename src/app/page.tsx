@@ -5,6 +5,7 @@ import Link from 'next/link';
 import Image from 'next/image';
 import { Coffee, BookOpen, UserCheck, X, ChevronLeft, ChevronRight } from 'lucide-react';
 import { DateTimeDisplay } from '@/components/DateTimeDisplay';
+import { ViraTechWatermark } from '@/components/ViraTechWatermark';
 
 export default function CustomerLandingPage() {
   const [menuOpen, setMenuOpen] = useState(false);
@@ -33,8 +34,9 @@ export default function CustomerLandingPage() {
           <span className="font-serif text-xl font-bold tracking-wider text-white">Cafe Blossom</span>
         </div>
         <div className="flex items-center gap-4">
-          <div className="hidden sm:block text-white">
+          <div className="hidden sm:flex items-center gap-2 text-white">
             <DateTimeDisplay />
+            <ViraTechWatermark />
           </div>
           <Link 
             href="/admin" 

@@ -17,64 +17,49 @@ export const billingService = {
     extraChargeLabel: string | null = null
   ): Promise<any> {
     await dbConnect();
-    const session = await mongoose.startSession();
-    session.startTransaction();
 
-    try {
-      // 1. Update order status
-      await Order.updateOne({ _id: orderId }, { status: 'billed', customer_phone: customerPhone, customer_name: customerName }, { session });
+    const targetOrderId = mongoose.Types.ObjectId.isValid(orderId) 
+      ? new mongoose.Types.ObjectId(orderId) 
+      : orderId;
 
-      // 2. Fetch order items to compute subtotal
-      const items = await OrderItem.find({ order_id: orderId }).session(session).lean();
-      const subtotal = items.reduce((acc, curr) => acc + curr.quantity * curr.price_at_order, 0);
-      const tax = 0;
-      const total = subtotal - discount + parcelCharge + extraCharge + tax;
+    await Order.updateOne({ _id: targetOrderId }, { status: 'billed', customer_phone: customerPhone, customer_name: customerName });
 
-      // 3. Create or update bill
-      let bill = await Bill.findOne({ order_id: orderId }).session(session);
-      if (bill) {
-        bill.subtotal = subtotal;
-        bill.discount = discount;
-        bill.tax = tax;
-        bill.total = total;
-        bill.parcel_charge = parcelCharge;
-        bill.extra_charge = extraCharge;
-        bill.extra_charge_label = extraChargeLabel;
-        await bill.save({ session });
-      } else {
-        bill = await Bill.create([{
-          order_id: orderId,
-          subtotal,
-          discount,
-          tax,
-          total,
-          parcel_charge: parcelCharge,
-          extra_charge: extraCharge,
-          extra_charge_label: extraChargeLabel
-        }], { session }).then(res => res[0]);
-      }
+    const items = await OrderItem.find({ order_id: targetOrderId }).lean();
+    const subtotal = items.reduce((acc, curr) => acc + curr.quantity * curr.price_at_order, 0);
+    const tax = 0;
+    const total = subtotal - discount + parcelCharge + extraCharge + tax;
 
-      await session.commitTransaction();
-      
-      const order = await Order.findById(orderId).lean();
-      const table = await Table.findById(order?.table_id).lean();
-      
-      return {
-        bill: { ...bill.toObject(), id: bill._id.toString() },
-        order: { ...order, id: order?._id.toString(), tables: table },
-        items
-      };
-    } catch (e) {
-      await session.abortTransaction();
-      throw e;
-    } finally {
-      session.endSession();
-    }
+    const bill = await Bill.findOneAndUpdate(
+      { order_id: targetOrderId },
+      {
+        order_id: targetOrderId,
+        subtotal,
+        discount,
+        tax,
+        total,
+        parcel_charge: parcelCharge,
+        extra_charge: extraCharge,
+        extra_charge_label: extraChargeLabel
+      },
+      { upsert: true, new: true }
+    );
+
+    const order = await Order.findById(targetOrderId).lean();
+    const table = order ? await Table.findById(order.table_id).lean() : null;
+
+    return {
+      bill: { ...bill.toObject(), id: bill._id.toString() },
+      order: { ...order, id: order?._id.toString(), tables: table },
+      items
+    };
   },
 
   async getBillByOrderId(orderId: string): Promise<any | null> {
     await dbConnect();
-    const bill = await Bill.findOne({ order_id: orderId }).lean();
+    const targetOrderId = mongoose.Types.ObjectId.isValid(orderId) 
+      ? new mongoose.Types.ObjectId(orderId) 
+      : orderId;
+    const bill = await Bill.findOne({ order_id: targetOrderId }).lean();
     if (!bill) return null;
     return { ...bill, id: bill._id.toString() };
   },
@@ -89,34 +74,27 @@ export const billingService = {
     customerName: string | null = null
   ): Promise<void> {
     await dbConnect();
-    const session = await mongoose.startSession();
-    session.startTransaction();
-    
-    try {
-      const order = await Order.findById(orderId).session(session);
-      if (!order) throw new Error('Order not found');
 
-      order.status = 'closed';
-      if (customerPhone !== null) order.customer_phone = customerPhone;
-      if (customerName !== null) order.customer_name = customerName;
-      await order.save({ session });
+    const targetOrderId = mongoose.Types.ObjectId.isValid(orderId) 
+      ? new mongoose.Types.ObjectId(orderId) 
+      : orderId;
 
-      await Table.updateOne({ _id: order.table_id }, { status: 'free' }, { session });
+    const order = await Order.findById(targetOrderId);
+    if (!order) throw new Error('Order not found');
 
-      const updateData: any = { payment_method: paymentMethod, cash_amount: cashAmount, online_amount: onlineAmount };
-      if (whatsappSent) {
-        updateData.whatsapp_sent_at = new Date();
-      }
+    order.status = 'closed';
+    if (customerPhone !== null) order.customer_phone = customerPhone;
+    if (customerName !== null) order.customer_name = customerName;
+    await order.save();
 
-      await Bill.updateOne({ order_id: orderId }, updateData, { session });
+    await Table.updateOne({ _id: order.table_id }, { status: 'free' });
 
-      await session.commitTransaction();
-    } catch (e) {
-      await session.abortTransaction();
-      throw e;
-    } finally {
-      session.endSession();
+    const updateData: any = { payment_method: paymentMethod, cash_amount: cashAmount, online_amount: onlineAmount };
+    if (whatsappSent) {
+      updateData.whatsapp_sent_at = new Date();
     }
+
+    await Bill.updateOne({ order_id: targetOrderId }, updateData);
   },
 
   async getBillHistory(): Promise<any[]> {
@@ -151,26 +129,34 @@ export const billingService = {
 
   async deleteBill(billId: string, orderId: string): Promise<void> {
     await dbConnect();
-    const session = await mongoose.startSession();
-    session.startTransaction();
 
-    try {
-      await Bill.deleteOne({ _id: billId }).session(session);
-      const order = await Order.findById(orderId).session(session);
-      
-      await OrderItem.deleteMany({ order_id: orderId }).session(session);
-      await Order.deleteOne({ _id: orderId }).session(session);
+    const execute = async (session?: mongoose.ClientSession) => {
+      const opts = session ? { session } : {};
+      await Bill.deleteOne({ _id: billId }, opts);
+      const order = await Order.findById(orderId, null, opts);
+
+      await OrderItem.deleteMany({ order_id: orderId }, opts);
+      await Order.deleteOne({ _id: orderId }, opts);
 
       if (order) {
-        await Table.updateOne({ _id: order.table_id }, { status: 'free' }).session(session);
+        await Table.updateOne({ _id: order.table_id }, { status: 'free' }, opts);
       }
+    };
 
-      await session.commitTransaction();
-    } catch (e) {
-      await session.abortTransaction();
-      throw e;
-    } finally {
-      session.endSession();
+    try {
+      const session = await mongoose.startSession();
+      session.startTransaction();
+      try {
+        await execute(session);
+        await session.commitTransaction();
+      } catch (err) {
+        await session.abortTransaction();
+        throw err;
+      } finally {
+        session.endSession();
+      }
+    } catch {
+      await execute();
     }
   },
 

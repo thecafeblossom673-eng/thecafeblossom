@@ -1,6 +1,8 @@
 'use client';
 
 import React, { useEffect, useState, use, useRef, useCallback } from 'react';
+import { generateWhatsAppBillText } from '@/lib/utils/billFormatter';
+import { playSuccessTone } from '@/lib/utils/sound';
 import { db } from '@/lib/db';
 import { MenuItem, OrderItem } from '@/types';
 import { useRouter } from 'next/navigation';
@@ -9,6 +11,7 @@ import Link from 'next/link';
 import Image from 'next/image';
 import { Modal } from '@/components/Modal';
 import { DateTimeDisplay } from '@/components/DateTimeDisplay';
+import { ViraTechWatermark } from '@/components/ViraTechWatermark';
 
 type OrderItemWithMenu = OrderItem & { menu_items?: MenuItem };
 
@@ -77,17 +80,25 @@ const getItemImage = (itemName: string | undefined, categoryName: string | undef
   return getCategoryImage(categoryName);
 };
 
+import { clientCache } from '@/lib/cache';
+
 export default function OrderEntryPage({ params }: { params: Promise<{ id: string }> }) {
   const { id: tableId } = use(params);
   const router = useRouter();
 
   const [tableNumber, setTableNumber] = useState<number | null>(null);
-  const [categories, setCategories] = useState<{ id: string; name: string; sort_order: number }[]>([]);
-  const [menuItems, setMenuItems] = useState<MenuItem[]>([]);
+  const [categories, setCategories] = useState<{ id: string; name: string; sort_order: number }[]>(() => {
+    if (typeof window !== 'undefined') return clientCache.get<any[]>('cats') || [];
+    return [];
+  });
+  const [menuItems, setMenuItems] = useState<MenuItem[]>(() => {
+    if (typeof window !== 'undefined') return clientCache.get<any[]>('items') || [];
+    return [];
+  });
   const [activeCategory, setActiveCategory] = useState<string>('');
   const [order, setOrder] = useState<ActiveOrder | null>(null);
   const [runningOffer, setRunningOffer] = useState<any>(null);
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading] = useState(false);
   const [busy, setBusy] = useState(false);
   const [phone, setPhone] = useState('');
   const [name, setName] = useState('');
@@ -100,6 +111,7 @@ export default function OrderEntryPage({ params }: { params: Promise<{ id: strin
   const [isParcel, setIsParcel] = useState(false);
   const [extraCharges, setExtraCharges] = useState<{amount: number, label: string}[]>([{amount: 0, label: ''}]);
   const [deliveryInfo, setDeliveryInfo] = useState<{ address: string; phone: string; placedAt: string } | null>(null);
+  const pendingMutationsRef = useRef(0);
   const [showCancelConfirm, setShowCancelConfirm] = useState(false);
   const [showCloseConfirm, setShowCloseConfirm] = useState(false);
   const [isLocked, setIsLocked] = useState(false);
@@ -159,17 +171,60 @@ export default function OrderEntryPage({ params }: { params: Promise<{ id: strin
   };
 
 
+  const mergeOrders = (local: ActiveOrder | null, server: ActiveOrder | null): ActiveOrder | null => {
+    if (!local) return server;
+    if (!server) return local;
+
+    const mergedItemsMap = new Map<string, OrderItemWithMenu>();
+
+    // Map server items first
+    server.items.forEach(item => {
+      mergedItemsMap.set(item.menu_item_id, item);
+    });
+
+    // Merge local items: preserve local items if server lacks them or has lower quantity
+    local.items.forEach(localItem => {
+      const serverItem = mergedItemsMap.get(localItem.menu_item_id);
+      if (!serverItem) {
+        mergedItemsMap.set(localItem.menu_item_id, localItem);
+      } else if (localItem.quantity > serverItem.quantity) {
+        mergedItemsMap.set(localItem.menu_item_id, {
+          ...serverItem,
+          quantity: localItem.quantity
+        });
+      }
+    });
+
+    return {
+      ...server,
+      items: Array.from(mergedItemsMap.values())
+    };
+  };
+
   // ── load everything ─────────────────────────────────────────────
   const load = useCallback(async (silent = false) => {
     try {
-      await db.sync();
       const todayDate = new Date().toLocaleDateString('en-CA');
-      const [tableData, cats, items, activeOrder, offer, status] = await Promise.all([
+
+      if (silent) {
+        // Lightweight background poll: safely merge server order into local order
+        const [activeOrder, status] = await Promise.all([
+          db.getActiveOrder(tableId),
+          db.getSystemStatus(todayDate),
+        ]);
+        setIsLocked(status.isLocked);
+        if (activeOrder && pendingMutationsRef.current === 0) {
+          setOrder(prev => mergeOrders(prev, activeOrder as ActiveOrder));
+        }
+        return;
+      }
+
+      const [tableData, cats, items, activeOrder, offersData, status] = await Promise.all([
         db.getTable(tableId),
         db.getCategories(),
         db.getMenuItems(),
         db.getActiveOrder(tableId),
-        db.getOffer(),
+        db.getOffers ? db.getOffers() : db.getOffer(),
         db.getSystemStatus(todayDate),
       ]);
       
@@ -181,38 +236,42 @@ export default function OrderEntryPage({ params }: { params: Promise<{ id: strin
       let finalCats = [...cats];
       let finalItems = [...items];
 
-      if (offer && offer.is_active) {
+      const offersList = Array.isArray(offersData) ? offersData : (offersData ? [offersData] : []);
+      const activeOffers = offersList.filter((o: any) => o.is_active);
+
+      if (activeOffers.length > 0) {
         const offersCat = { id: 'cat-offers', name: 'Offers 🔥', sort_order: 0 };
         finalCats = [offersCat, ...finalCats];
-        finalItems = [{
-          id: 'running-offer',
-          category_id: 'cat-offers',
-          name: offer.title,
-          description: offer.description,
-          price: offer.price,
-          is_veg: true,
-          is_available: true,
-          sort_order: -100
-        } as MenuItem, ...finalItems];
-        setRunningOffer(offer);
-      } else {
-        setRunningOffer(null);
+        activeOffers.forEach((off: any, idx: number) => {
+          finalItems.unshift({
+            id: `offer-${off.id || off._id}`,
+            category_id: 'cat-offers',
+            name: off.title,
+            description: off.description,
+            price: off.price,
+            is_veg: true,
+            is_available: true,
+            sort_order: -100 + idx
+          } as MenuItem);
+        });
       }
 
       setCategories(finalCats);
-      if (finalCats.length > 0 && !activeCategory) setActiveCategory(finalCats[0].id);
+      setActiveCategory(prev => (prev && finalCats.some(c => c.id === prev) ? prev : (finalCats[0]?.id || '')));
       setMenuItems(finalItems);
-      setOrder(activeOrder as ActiveOrder | null);
+      clientCache.set('cats', cats);
+      clientCache.set('items', items);
+      setOrder(prev => mergeOrders(prev, activeOrder as ActiveOrder));
 
       if (!silent && tableData?.table_number === 10) {
         setIsParcel(true);
       }
 
-      if (activeOrder?.customer_phone) setPhone(activeOrder.customer_phone);
+      if (activeOrder?.customer_phone) setPhone(prev => prev || activeOrder.customer_phone || '');
       if (activeOrder?.items) {
         const n: Record<string, string> = {};
         activeOrder.items.forEach((i: OrderItemWithMenu) => { n[i.id] = i.notes ?? ''; });
-        setNotes(n);
+        setNotes(prev => (Object.keys(prev).length === 0 ? n : prev));
       }
 
       // Load delivery info from localStorage if this is a delivery order
@@ -222,6 +281,22 @@ export default function OrderEntryPage({ params }: { params: Promise<{ id: strin
           setDeliveryInfo(JSON.parse(deliveryRaw));
         } else {
           setDeliveryInfo(null);
+        }
+      }
+
+      // Restore billing form state from localStorage (survives refresh/restart)
+      if (activeOrder) {
+        const savedFormRaw = localStorage.getItem(`cafe_blossom_bill_form_${activeOrder.id}`);
+        if (savedFormRaw) {
+          try {
+            const savedForm = JSON.parse(savedFormRaw);
+            if (savedForm.phone) setPhone(prev => prev || savedForm.phone);
+            if (savedForm.name) setName(prev => prev || savedForm.name);
+            if (savedForm.paymentMethod) setPaymentMethod(savedForm.paymentMethod);
+            if (savedForm.discountType) setDiscountType(savedForm.discountType);
+            if (typeof savedForm.discount === 'number') setDiscount(prev => prev === 0 ? savedForm.discount : prev);
+            if (savedForm.extraCharges) setExtraCharges(prev => (prev.length === 1 && prev[0].amount === 0) ? savedForm.extraCharges : prev);
+          } catch { /* ignore invalid JSON */ }
         }
       }
 
@@ -236,6 +311,10 @@ export default function OrderEntryPage({ params }: { params: Promise<{ id: strin
           } else {
             setExtraCharges([{ amount: 0, label: '' }]);
           }
+          // Restore payment method from bill record
+          if (bill.payment_method) setPaymentMethod(bill.payment_method as 'cash' | 'online' | 'split');
+          if (bill.customer_name) setName(prev => prev || bill.customer_name || '');
+          if (bill.customer_phone) setPhone(prev => prev || bill.customer_phone || '');
         }
       }
     } catch (err) {
@@ -293,6 +372,22 @@ export default function OrderEntryPage({ params }: { params: Promise<{ id: strin
     }
   }, [finalTotal, paymentMethod]);
 
+  // Auto-save billing form state so it survives refresh / server restart / logout
+  useEffect(() => {
+    if (!order?.id || order.status === 'closed') return;
+    const key = `cafe_blossom_bill_form_${order.id}`;
+    try {
+      localStorage.setItem(key, JSON.stringify({
+        phone,
+        name,
+        paymentMethod,
+        discountType,
+        discount,
+        extraCharges,
+      }));
+    } catch { /* quota exceeded */ }
+  }, [order?.id, order?.status, phone, name, paymentMethod, discountType, discount, extraCharges]);
+
   const qtyFor = (menuItemId: string) =>
     order?.items.find(oi => oi.menu_item_id === menuItemId)?.quantity ?? 0;
 
@@ -301,39 +396,102 @@ export default function OrderEntryPage({ params }: { params: Promise<{ id: strin
 
   const catItems = menuItems.filter(m => m.category_id === activeCategory && (m.is_available !== false));
 
-  // ── actions ──────────────────────────────────────────────────────
+  // ── actions (0ms Optimistic UI) ───────────────────────────────────
   const addItem = async (item: MenuItem) => {
-    if (!order || busy) return;
-    setBusy(true);
+    let currentOrder = order;
+    if (!currentOrder) {
+      try {
+        const created = await db.createOrder(tableId);
+        if (!created) return;
+        currentOrder = { ...created, items: created.items || [] };
+        setOrder(currentOrder);
+      } catch (err) {
+        console.error('Error creating order on item click:', err);
+        return;
+      }
+    }
+    const targetOrder = currentOrder;
+    if (!targetOrder) return;
+
+    pendingMutationsRef.current += 1;
+
+    // 1. Instant 0ms local state update
+    setOrder(prev => {
+      const base = prev || targetOrder;
+      if (!base) return base;
+      const existingIndex = base.items.findIndex(i => i.menu_item_id === item.id);
+      const newItems = [...(base.items || [])];
+      if (existingIndex >= 0) {
+        newItems[existingIndex] = {
+          ...newItems[existingIndex],
+          quantity: newItems[existingIndex].quantity + 1
+        };
+      } else {
+        newItems.push({
+          id: `temp-${Date.now()}`,
+          order_id: base.id,
+          menu_item_id: item.id,
+          quantity: 1,
+          price_at_order: item.price,
+          notes: '',
+          menu_items: item
+        });
+      }
+      return { ...base, items: newItems };
+    });
+
+    // 2. Async server save in background
     try {
-      await db.addOrderItem(order.id, item.id, 1, null, item.price);
-      const updated = await db.getActiveOrder(tableId);
-      setOrder(updated as ActiveOrder);
-    } finally { setBusy(false); }
+      await db.addOrderItem(targetOrder.id, item.id, 1, null, item.price);
+    } catch (err) {
+      console.error('Error adding item:', err);
+      load(true);
+    } finally {
+      pendingMutationsRef.current = Math.max(0, pendingMutationsRef.current - 1);
+    }
   };
 
   const changeQty = async (oi: OrderItemWithMenu, newQty: number) => {
-    if (busy) return;
-    setBusy(true);
+    if (!order) return;
+    pendingMutationsRef.current += 1;
+
+    // 1. Instant 0ms local state update
+    setOrder(prev => {
+      if (!prev) return prev;
+      const newItems = prev.items
+        .map(item => (item.menu_item_id === oi.menu_item_id || item.id === oi.id ? { ...item, quantity: newQty } : item))
+        .filter(item => item.quantity > 0);
+      return { ...prev, items: newItems };
+    });
+
+    // 2. Async server update in background
     try {
-      await db.updateOrderItem(oi.id, newQty, oi.notes);
-      const updated = await db.getActiveOrder(tableId);
-      setOrder(updated as ActiveOrder);
-    } finally { setBusy(false); }
+      const targetId = oi.id && !oi.id.startsWith('temp-') ? oi.id : oi.menu_item_id;
+      await db.updateOrderItem(targetId, newQty, oi.notes);
+    } catch (err) {
+      console.error('Error changing quantity:', err);
+      load(true);
+    } finally {
+      pendingMutationsRef.current = Math.max(0, pendingMutationsRef.current - 1);
+    }
   };
 
   const saveNote = async (oi: OrderItemWithMenu, text: string) => {
     setNotes(p => ({ ...p, [oi.id]: text }));
     try {
       await db.updateOrderItem(oi.id, oi.quantity, text || null);
-      const updated = await db.getActiveOrder(tableId);
-      setOrder(updated as ActiveOrder);
-    } catch (err) { console.error(err); }
+    } catch (err) {
+      console.error(err);
+    }
   };
 
   const generateBill = async () => {
     if (!order || busy) return;
     setBusy(true);
+
+    // 0ms Optimistic UI update so bill view activates instantly
+    setOrder(prev => prev ? ({ ...prev, status: 'billed' }) : prev);
+
     try {
       await db.generateBill(
         order.id,
@@ -344,9 +502,12 @@ export default function OrderEntryPage({ params }: { params: Promise<{ id: strin
         extraChargeAmount,
         combinedExtraChargeLabel || null
       );
-      const updated = await db.getActiveOrder(tableId);
-      setOrder(updated as ActiveOrder);
-    } finally { setBusy(false); }
+    } catch (err) {
+      console.error('Error generating bill:', err);
+      load(true);
+    } finally {
+      setBusy(false);
+    }
   };
 
   const unlockOrder = async () => {
@@ -361,83 +522,64 @@ export default function OrderEntryPage({ params }: { params: Promise<{ id: strin
 
   const handleCancelOrder = async () => {
     if (!order) return;
-    setBusy(true);
+    const orderIdToCancel = order.id;
+
+    // 1. Instant 0ms optimistic cache update
+    const cachedTables = clientCache.get<any[]>('admin_tables');
+    if (cachedTables) {
+      const updatedTables = cachedTables.map(t => {
+        if (t.activeOrder?.id === orderIdToCancel || t.id === tableId) {
+          return { ...t, status: 'free' as const, activeOrder: null };
+        }
+        return t;
+      });
+      clientCache.set('admin_tables', updatedTables);
+    }
+
+    // Broadcast change cross-tab instantly
     try {
-      await db.cancelOrder(order.id);
-      router.push('/admin');
+      const channel = new BroadcastChannel('cafe_blossom_orders');
+      channel.postMessage({ type: 'ORDER_CANCELLED', tableId });
+      channel.close();
+    } catch {
+      // Fallback ignored
+    }
+
+    // 2. Instant 0ms navigation back to admin board
+    router.push('/admin');
+
+    // 3. Async background server cancellation
+    try {
+      await db.cancelOrder(orderIdToCancel);
     } catch (err) {
-      console.error(err);
-      showAlert('Error', 'Failed to cancel order');
-      setBusy(false);
-      setShowCancelConfirm(false);
+      console.error('Failed to cancel order in background:', err);
+      clientCache.invalidate('admin_tables');
     }
   };
 
   const buildBillText = () => {
     if (!order || !tableNumber) return '';
-    const now = new Date();
-    const date = now.toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' });
-    const time = now.toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' });
-    const W = 34;
-    const line = '\u2501'.repeat(W);
-    const dashes = '\u2504'.repeat(W);
-
-    let text = '';
-    text += `${line}\n`;
-    text += `    🌸  *CAFE BLOSSOM*\n`;
-    text += `         Ishwarpur\n`;
-    text += `${line}\n`;
-    text += `📅 ${date}  ⏰ ${time}\n`;
-    const displayTable = tableNumber === 9 ? 'Zomato' : tableNumber === 10 ? 'Parcel' : `${tableNumber}`;
-    text += `🌿 Table: ${displayTable}${isParcel && tableNumber !== 10 ? '  📦 PARCEL' : ''}\n`;
-    text += `${dashes}\n`;
-    text += `*ITEM${' '.repeat(W - 14)}QTY    AMT*\n`;
-    text += `${dashes}\n`;
-
-    order.items.forEach(item => {
-      const name = item.menu_items?.name ?? 'Item';
-      const qty = `${item.quantity}`;
-      const amt = `₹${item.quantity * item.price_at_order}`;
-      const nameW = W - qty.length - amt.length - 4;
-      const truncName = name.length > nameW ? name.slice(0, nameW - 1) + '…' : name;
-      const pad = Math.max(1, W - truncName.length - qty.length - amt.length - 2);
-      text += `${truncName}${' '.repeat(Math.max(1, pad - qty.length))}${qty}  ${amt}\n`;
+    return generateWhatsAppBillText({
+      tableNumber,
+      isParcel,
+      items: order.items.map(i => ({
+        name: i.menu_items?.name ?? 'Item',
+        quantity: i.quantity,
+        price: i.price_at_order
+      })),
+      orderTotal,
+      discountAmount,
+      discountType,
+      discountValue: discount,
+      parcelCharge,
+      extraChargeAmount,
+      extraChargeLabel: combinedExtraChargeLabel,
+      finalTotal,
+      paymentMethod,
+      cashAmountPaid,
+      onlineAmountPaid,
+      createdAt: order.created_at
     });
-
-    text += `${dashes}\n`;
-    text += `Subtotal${' '.repeat(W - 8 - `₹${orderTotal}`.length)}₹${orderTotal}\n`;
-
-    if (discountAmount > 0) {
-      const discLabel = discountType === 'percent' ? `Discount (${discount}%)` : 'Discount';
-      text += `${discLabel}${' '.repeat(W - discLabel.length - `-₹${discountAmount}`.length)}-₹${discountAmount}\n`;
-    }
-
-    if (parcelCharge > 0) {
-      text += `Parcel Charge${' '.repeat(W - 13 - `₹${parcelCharge}`.length)}₹${parcelCharge}\n`;
-    }
-
-    if (extraChargeAmount > 0) {
-      const extraLabel = combinedExtraChargeLabel || 'Extra Charge';
-      text += `${extraLabel}${' '.repeat(W - extraLabel.length - `₹${extraChargeAmount}`.length)}₹${extraChargeAmount}\n`;
-    }
-    text += `${line}\n`;
-    text += `*TOTAL${' '.repeat(W - 6 - `₹${finalTotal}`.length)}₹${finalTotal}*\n`;
-    text += `${line}\n`;
-    
-    let payText = '';
-    if (paymentMethod === 'cash') {
-      payText = 'Paid via: CASH';
-    } else if (paymentMethod === 'online') {
-      payText = 'Paid via: ONLINE';
-    } else {
-      payText = `SPLIT: Cash ₹${cashAmountPaid} / Online ₹${onlineAmountPaid}`;
-    }
-    text += `${payText}\n`;
-    text += `${line}\n\n`;
-    text += `✨ Thank you for dining with us!\n`;
-    text += `🌿 We hope to see you again soon.\n\n`;
-    text += `_Cafe Blossom — Where Every Sip Blooms_ 🌸`;
-    return text;
   };
 
   const sendWhatsApp = async () => {
@@ -450,6 +592,8 @@ export default function OrderEntryPage({ params }: { params: Promise<{ id: strin
     setBusy(true);
     try {
       await db.closeTable(order.id, paymentMethod, cashAmountPaid, onlineAmountPaid, true, phone || null, name || null);
+      localStorage.removeItem(`cafe_blossom_bill_form_${order.id}`);
+      clientCache.invalidate('admin_tables');
       router.push('/admin');
     } finally { setBusy(false); }
   };
@@ -464,6 +608,8 @@ export default function OrderEntryPage({ params }: { params: Promise<{ id: strin
     setBusy(true);
     try {
       await db.closeTable(order.id, paymentMethod, cashAmountPaid, onlineAmountPaid, false, phone || null, name || null);
+      localStorage.removeItem(`cafe_blossom_bill_form_${order.id}`);
+      clientCache.invalidate('admin_tables');
       router.push('/admin');
     } catch (err) {
       console.error(err);
@@ -582,8 +728,9 @@ export default function OrderEntryPage({ params }: { params: Promise<{ id: strin
                 <Trash2 className="h-4 w-4" />
               </button>
             )}
-            <div className="border-l border-primary-foreground/20 pl-3 ml-2">
+            <div className="border-l border-primary-foreground/20 pl-3 ml-2 flex items-center gap-2">
               <DateTimeDisplay />
+              <ViraTechWatermark />
             </div>
           </div>
         </div>

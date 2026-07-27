@@ -1,18 +1,24 @@
 'use client';
 
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useState, useMemo } from 'react';
 import { db } from '@/lib/db';
 import { Bill } from '@/types';
 import { ArrowLeft, Search, Coffee, History, IndianRupee, ShoppingBag, TrendingUp, MessageCircle, CheckCircle, Clock, Calendar, Phone, Trash2, Send } from 'lucide-react';
 import Link from 'next/link';
 import { Modal } from '@/components/Modal';
 import { DateTimeDisplay } from '@/components/DateTimeDisplay';
+import { ViraTechWatermark } from '@/components/ViraTechWatermark';
+import { clientCache } from '@/lib/cache';
+import { verifyPassword } from '@/lib/passwords';
 
 type FilterPeriod = 'today' | 'week' | 'month' | 'year' | 'all';
 
 export default function BillHistoryPage() {
-  const [bills, setBills] = useState<Bill[]>([]);
-  const [loading, setLoading] = useState(true);
+  const [bills, setBills] = useState<Bill[]>(() => {
+    if (typeof window !== 'undefined') return clientCache.get<Bill[]>('bill_history') || [];
+    return [];
+  });
+  const [loading, setLoading] = useState(false);
   const [search, setSearch] = useState('');
   const [tableFilter, setTableFilter] = useState('');
   const [period, setPeriod] = useState<FilterPeriod>('today');
@@ -37,8 +43,8 @@ export default function BillHistoryPage() {
   };
 
   const confirmDelete = async () => {
-    if (deletePassword !== '7707') {
-      setDeleteError('Incorrect admin password.');
+    if (!verifyPassword('inventory', deletePassword)) {
+      setDeleteError('Incorrect inventory password.');
       return;
     }
 
@@ -58,9 +64,9 @@ export default function BillHistoryPage() {
 
   const fetchHistory = async () => {
     try {
-      setLoading(true);
       const data = await db.getBillHistory();
       setBills(data);
+      clientCache.set('bill_history', data);
     } catch (err) {
       console.error(err);
     } finally {
@@ -137,40 +143,58 @@ export default function BillHistoryPage() {
     }
   };
 
-  // ── Filtered bills for the table ────────────────────────────────
-  const filtered = bills.filter(b => {
-    // Period filter
-    if (period === 'today' && !isToday(b.created_at)) return false;
-    if (period === 'week' && !isThisWeek(b.created_at)) return false;
-    if (period === 'month' && !isThisMonth(b.created_at)) return false;
-    if (period === 'year' && !isThisYear(b.created_at)) return false;
+  // ── Filtered bills and metrics in single-pass useMemo ─────────
+  const {
+    filtered, filteredRevenue, filteredCashRevenue, filteredOnlineRevenue,
+    filteredAvg, filteredBillCount, filteredWhatsappSent, filteredTablesServed
+  } = useMemo(() => {
+    const list = bills.filter(b => {
+      if (period === 'today' && !isToday(b.created_at)) return false;
+      if (period === 'week' && !isThisWeek(b.created_at)) return false;
+      if (period === 'month' && !isThisMonth(b.created_at)) return false;
+      if (period === 'year' && !isThisYear(b.created_at)) return false;
 
-    // Table filter
-    if (tableFilter) {
-      const tNum = b.orders?.tables?.table_number?.toString() ?? '';
-      if (tNum !== tableFilter) return false;
-    }
+      if (tableFilter) {
+        const tNum = b.orders?.tables?.table_number?.toString() ?? '';
+        if (tNum !== tableFilter) return false;
+      }
 
-    // Search
-    if (search.trim()) {
-      const q = search.toLowerCase();
-      const phone = b.orders?.customer_phone ?? '';
-      const tNum = b.orders?.tables?.table_number?.toString() ?? '';
-      if (!phone.includes(q) && !tNum.includes(q)) return false;
-    }
+      if (search.trim()) {
+        const q = search.toLowerCase();
+        const phone = b.orders?.customer_phone ?? '';
+        const tNum = b.orders?.tables?.table_number?.toString() ?? '';
+        if (!phone.includes(q) && !tNum.includes(q)) return false;
+      }
 
-    return true;
-  });
+      return true;
+    });
 
-  const filteredRevenue = filtered.reduce((s, b) => s + Number(b.total), 0);
-  const filteredCashRevenue = filtered.reduce((s, b) => s + Number(b.cash_amount || (b.payment_method === 'online' ? 0 : b.total)), 0);
-  const filteredOnlineRevenue = filtered.reduce((s, b) => s + Number(b.online_amount || (b.payment_method === 'online' ? b.total : 0)), 0);
-  const filteredAvg = filtered.length > 0 ? Math.round(filteredRevenue / filtered.length) : 0;
-  const filteredBillCount = filtered.length;
-  const filteredWhatsappSent = filtered.filter(b => b.whatsapp_sent_at).length;
+    let rev = 0, cRev = 0, oRev = 0, waSent = 0;
+    const tableSet = new Set<number>();
 
-  // Unique tables served in the filtered period
-  const filteredTablesServed = new Set(filtered.map(b => b.orders?.tables?.table_number).filter(Boolean)).size;
+    list.forEach(b => {
+      const tot = Number(b.total);
+      rev += tot;
+      cRev += Number(b.cash_amount || (b.payment_method === 'online' ? 0 : b.total));
+      oRev += Number(b.online_amount || (b.payment_method === 'online' ? b.total : 0));
+      if (b.whatsapp_sent_at) waSent++;
+      if (b.orders?.tables?.table_number) tableSet.add(b.orders.tables.table_number);
+    });
+
+    const count = list.length;
+    const avg = count > 0 ? Math.round(rev / count) : 0;
+
+    return {
+      filtered: list,
+      filteredRevenue: rev,
+      filteredCashRevenue: cRev,
+      filteredOnlineRevenue: oRev,
+      filteredAvg: avg,
+      filteredBillCount: count,
+      filteredWhatsappSent: waSent,
+      filteredTablesServed: tableSet.size
+    };
+  }, [bills, period, tableFilter, search]);
 
   return (
     <div className="min-h-screen bg-background">
@@ -187,8 +211,9 @@ export default function BillHistoryPage() {
               <p className="text-[10px] uppercase tracking-widest opacity-70 font-sans">Cafe Blossom · Ishwarpur</p>
             </div>
           </Link>
-          <div className="ml-auto border-l border-primary-foreground/20 pl-3">
+          <div className="ml-auto border-l border-primary-foreground/20 pl-3 flex items-center gap-2">
             <DateTimeDisplay />
+            <ViraTechWatermark />
           </div>
         </div>
       </header>
@@ -492,7 +517,7 @@ export default function BillHistoryPage() {
                 <h3 className="font-serif text-lg font-bold">Delete Bill</h3>
               </div>
               <p className="text-sm font-sans text-muted-foreground mb-4">
-                This action cannot be undone. Enter the admin password to confirm deletion.
+                This action cannot be undone. Enter the <strong>inventory password</strong> to confirm deletion.
               </p>
               
               <div className="space-y-3 font-sans">
@@ -504,9 +529,9 @@ export default function BillHistoryPage() {
                     setDeleteError('');
                   }}
                   onKeyDown={(e) => e.key === 'Enter' && confirmDelete()}
-                  placeholder="Admin Password"
+                  placeholder="Inventory Password"
                   autoFocus
-                  className="w-full px-4 py-2.5 rounded-xl border border-border bg-background focus:border-red-500 focus:ring-1 focus:ring-red-500 transition-colors"
+                  className="w-full px-4 py-2.5 rounded-xl border border-border bg-background focus:border-red-500 focus:ring-1 focus:ring-red-500 transition-colors font-mono tracking-widest"
                 />
                 {deleteError && (
                   <p className="text-xs text-red-600 font-semibold">{deleteError}</p>

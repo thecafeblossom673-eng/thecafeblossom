@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useState, useMemo } from 'react';
 import { db } from '@/lib/db';
 import { Bill, Expense, DayClose } from '@/types';
 import { 
@@ -12,22 +12,63 @@ import {
 import Link from 'next/link';
 import { Modal } from '@/components/Modal';
 import { DateTimeDisplay } from '@/components/DateTimeDisplay';
+import { ViraTechWatermark } from '@/components/ViraTechWatermark';
+import { clientCache } from '@/lib/cache';
+import { verifyPassword } from '@/lib/passwords';
 
 type FilterPeriod = 'today' | 'week' | 'month' | 'year' | 'all';
 type Tab = 'dashboard' | 'day_close';
 
 export default function InventoryExpensesPage() {
   const [activeTab, setActiveTab] = useState<Tab>('dashboard');
-  const [bills, setBills] = useState<Bill[]>([]);
-  const [expenses, setExpenses] = useState<Expense[]>([]);
-  const [dayCloses, setDayCloses] = useState<DayClose[]>([]);
+  const [bills, setBills] = useState<Bill[]>(() => {
+    if (typeof window !== 'undefined') return clientCache.get<Bill[]>('inv_bills') || [];
+    return [];
+  });
+  const [expenses, setExpenses] = useState<Expense[]>(() => {
+    if (typeof window !== 'undefined') return clientCache.get<Expense[]>('inv_expenses') || [];
+    return [];
+  });
+  const [dayCloses, setDayCloses] = useState<DayClose[]>(() => {
+    if (typeof window !== 'undefined') return clientCache.get<DayClose[]>('inv_daycloses') || [];
+    return [];
+  });
   const [occupiedTables, setOccupiedTables] = useState<number[]>([]);
-  const [isTodayClosed, setIsTodayClosed] = useState(false);
-  const [isTodayOpen, setIsTodayOpen] = useState(false);
+  const [isTodayClosed, setIsTodayClosed] = useState(() => {
+    if (typeof window !== 'undefined') {
+      const cached = clientCache.get<boolean>('inv_day_closed');
+      if (cached !== null) return cached;
+    }
+    return false;
+  });
+  const [isTodayOpen, setIsTodayOpen] = useState(() => {
+    if (typeof window !== 'undefined') {
+      const cached = clientCache.get<boolean>('inv_day_open');
+      if (cached !== null) return cached;
+    }
+    return false;
+  });
   const [openingCash, setOpeningCash] = useState(0);
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading] = useState(false);
   const [busy, setBusy] = useState(false);
   const [period, setPeriod] = useState<FilterPeriod>('today');
+
+  // ── Inventory Gate (re-asked every visit, no session) ────────────────────
+  const [gateUnlocked, setGateUnlocked] = useState(false);
+  const [gateInput, setGateInput] = useState('');
+  const [gateError, setGateError] = useState('');
+  const [showGatePass, setShowGatePass] = useState(false);
+
+  const handleGateSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (verifyPassword('inventory', gateInput)) {
+      setGateUnlocked(true);
+      setGateError('');
+    } else {
+      setGateError('Incorrect password. Please try again.');
+      setGateInput('');
+    }
+  };
 
   // Input states for new expense
   const [category, setCategory] = useState<'raw_material' | 'electricity' | 'other'>('raw_material');
@@ -51,7 +92,6 @@ export default function InventoryExpensesPage() {
 
   const fetchData = async () => {
     try {
-      setLoading(true);
       const todayDate = getTodayString();
       const [billHistory, expenseList, dayCloseHistory, tablesList, systemStatus] = await Promise.all([
         db.getBillHistory(),
@@ -64,8 +104,15 @@ export default function InventoryExpensesPage() {
       setBills(billHistory);
       setExpenses(expenseList);
       setDayCloses(dayCloseHistory);
+
+      clientCache.set('inv_bills', billHistory);
+      clientCache.set('inv_expenses', expenseList);
+      clientCache.set('inv_daycloses', dayCloseHistory);
+
       setIsTodayClosed(systemStatus.isClosed);
       setIsTodayOpen(systemStatus.isOpen);
+      clientCache.set('inv_day_closed', systemStatus.isClosed);
+      clientCache.set('inv_day_open', systemStatus.isOpen);
 
       const occupied = tablesList
         .filter((t: any) => t.status === 'occupied')
@@ -131,34 +178,79 @@ export default function InventoryExpensesPage() {
     return true;
   };
 
-  const filteredBills = bills.filter(b => filterByPeriod(b.created_at));
-  const filteredExpenses = expenses.filter(e => filterByPeriod(e.created_at));
+  const {
+    totalRevenue, cashRevenue, onlineRevenue, rawMaterialCost,
+    electricityCost, otherCost, totalExpenses, netProfit, profitMargin,
+    todayRevenue, todayCashRevenue, todayOnlineRevenue, todayExpenses, todayProfit,
+    filteredBills, filteredExpenses
+  } = useMemo(() => {
+    let totRev = 0, cRev = 0, oRev = 0;
+    let todRev = 0, todCRev = 0, todORev = 0;
+    const fBills: Bill[] = [];
+    const fExpenses: Expense[] = [];
 
-  const totalRevenue = filteredBills.reduce((s, b) => s + Number(b.total), 0);
-  const cashRevenue = filteredBills.reduce((s, b) => s + Number(b.cash_amount || (b.payment_method === 'online' ? 0 : b.total)), 0);
-  const onlineRevenue = filteredBills.reduce((s, b) => s + Number(b.online_amount || (b.payment_method === 'online' ? b.total : 0)), 0);
-  
-  const rawMaterialCost = filteredExpenses
-    .filter(e => e.category === 'raw_material')
-    .reduce((s, e) => s + Number(e.amount), 0);
+    bills.forEach(b => {
+      const isForPeriod = filterByPeriod(b.created_at);
+      const isForToday = isToday(b.created_at);
+      const total = Number(b.total);
+      const cash = Number(b.cash_amount || (b.payment_method === 'online' ? 0 : b.total));
+      const online = Number(b.online_amount || (b.payment_method === 'online' ? b.total : 0));
 
-  const electricityCost = filteredExpenses
-    .filter(e => e.category === 'electricity')
-    .reduce((s, e) => s + Number(e.amount), 0);
+      if (isForPeriod) {
+        fBills.push(b);
+        totRev += total;
+        cRev += cash;
+        oRev += online;
+      }
+      if (isForToday) {
+        todRev += total;
+        todCRev += cash;
+        todORev += online;
+      }
+    });
 
-  const otherCost = filteredExpenses
-    .filter(e => e.category === 'other')
-    .reduce((s, e) => s + Number(e.amount), 0);
+    let rmCost = 0, elCost = 0, otCost = 0, totExp = 0, todExp = 0;
 
-  const totalExpenses = rawMaterialCost + electricityCost + otherCost;
-  const netProfit = totalRevenue - totalExpenses;
-  const profitMargin = totalRevenue > 0 ? Math.round((netProfit / totalRevenue) * 100) : 0;
+    expenses.forEach(e => {
+      const isForPeriod = filterByPeriod(e.created_at);
+      const isForToday = isToday(e.created_at);
+      const amt = Number(e.amount);
 
-  const todayRevenue = bills.filter(b => isToday(b.created_at)).reduce((s, b) => s + Number(b.total), 0);
-  const todayCashRevenue = bills.filter(b => isToday(b.created_at)).reduce((s, b) => s + Number(b.cash_amount || (b.payment_method === 'online' ? 0 : b.total)), 0);
-  const todayOnlineRevenue = bills.filter(b => isToday(b.created_at)).reduce((s, b) => s + Number(b.online_amount || (b.payment_method === 'online' ? b.total : 0)), 0);
-  const todayExpenses = expenses.filter(e => isToday(e.created_at)).reduce((s, e) => s + Number(e.amount), 0);
-  const todayProfit = todayRevenue - todayExpenses;
+      if (isForPeriod) {
+        fExpenses.push(e);
+        totExp += amt;
+        if (e.category === 'raw_material') rmCost += amt;
+        else if (e.category === 'electricity') elCost += amt;
+        else otCost += amt;
+      }
+      if (isForToday) {
+        todExp += amt;
+      }
+    });
+
+    const netProf = totRev - totExp;
+    const profMargin = totRev > 0 ? Math.round((netProf / totRev) * 100) : 0;
+    const todProfit = todRev - todExp;
+
+    return {
+      totalRevenue: totRev,
+      cashRevenue: cRev,
+      onlineRevenue: oRev,
+      rawMaterialCost: rmCost,
+      electricityCost: elCost,
+      otherCost: otCost,
+      totalExpenses: totExp,
+      netProfit: netProf,
+      profitMargin: profMargin,
+      todayRevenue: todRev,
+      todayCashRevenue: todCRev,
+      todayOnlineRevenue: todORev,
+      todayExpenses: todExp,
+      todayProfit: todProfit,
+      filteredBills: fBills,
+      filteredExpenses: fExpenses
+    };
+  }, [bills, expenses, period]);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -285,6 +377,85 @@ export default function InventoryExpensesPage() {
     }
   };
 
+  // ── Inventory Gate Screen (shown every visit before content) ─────────────
+  if (!gateUnlocked) {
+    return (
+      <div className="min-h-screen bg-background flex items-center justify-center p-4">
+        <div className="w-full max-w-sm">
+          {/* Card */}
+          <div className="bg-card border border-border rounded-2xl shadow-xl p-8 space-y-6">
+            {/* Icon + Title */}
+            <div className="flex flex-col items-center text-center space-y-3">
+              <div className="h-16 w-16 rounded-full bg-primary/10 flex items-center justify-center">
+                <Lock className="h-8 w-8 text-primary" />
+              </div>
+              <div>
+                <h1 className="font-serif text-2xl font-bold text-foreground">Inventory Access</h1>
+                <p className="text-sm text-muted-foreground font-sans mt-1">
+                  Enter the inventory password to continue.
+                </p>
+              </div>
+            </div>
+
+            {/* Form */}
+            <form onSubmit={handleGateSubmit} className="space-y-4">
+              <div className="space-y-1.5">
+                <label className="text-xs font-semibold uppercase tracking-wider text-muted-foreground font-sans">
+                  Inventory Password
+                </label>
+                <div className="flex rounded-xl border border-border overflow-hidden focus-within:ring-2 focus-within:ring-primary focus-within:border-primary transition-all">
+                  <input
+                    type={showGatePass ? 'text' : 'password'}
+                    value={gateInput}
+                    onChange={e => { setGateInput(e.target.value); setGateError(''); }}
+                    placeholder="Enter password"
+                    autoFocus
+                    className="flex-1 px-4 py-3 bg-background text-foreground focus:outline-none font-mono tracking-widest text-sm"
+                    autoComplete="current-password"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setShowGatePass(p => !p)}
+                    className="px-3 text-muted-foreground hover:text-foreground transition-colors bg-background border-l border-border cursor-pointer"
+                    tabIndex={-1}
+                  >
+                    {showGatePass
+                      ? <Unlock className="h-4 w-4" />
+                      : <Lock className="h-4 w-4" />}
+                  </button>
+                </div>
+                {gateError && (
+                  <p className="text-xs text-red-600 font-sans flex items-center gap-1">
+                    <AlertTriangle className="h-3 w-3" />
+                    {gateError}
+                  </p>
+                )}
+              </div>
+
+              <button
+                type="submit"
+                className="w-full bg-primary hover:bg-primary/90 text-primary-foreground font-bold uppercase tracking-wider py-3 rounded-xl transition-all active:scale-[0.98] shadow-md flex items-center justify-center gap-2 cursor-pointer"
+              >
+                <Unlock className="h-4 w-4" />
+                Unlock Inventory
+              </button>
+            </form>
+
+            {/* Back link */}
+            <div className="text-center">
+              <Link
+                href="/admin"
+                className="text-xs text-muted-foreground hover:text-foreground font-sans underline transition-colors"
+              >
+                ← Back to Dashboard
+              </Link>
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="min-h-screen bg-background">
       {/* Header */}
@@ -307,8 +478,9 @@ export default function InventoryExpensesPage() {
             <button onClick={fetchData} className="text-[11px] text-primary-foreground underline cursor-pointer font-sans">
               Refresh
             </button>
-            <div className="border-l border-primary-foreground/20 pl-3">
+            <div className="border-l border-primary-foreground/20 pl-3 flex items-center gap-2">
               <DateTimeDisplay />
+              <ViraTechWatermark />
             </div>
           </div>
         </div>
@@ -618,7 +790,7 @@ export default function InventoryExpensesPage() {
                   </h2>
                   <p className="text-xs text-muted-foreground font-sans mt-0.5">
                     {!isTodayOpen 
-                      ? "Start the day by entering the opening cash balance."
+                      ? "Open the business day. Optionally enter the opening cash balance."
                       : "Generate the end of day financial closure. Make sure all guest orders are closed before finalizing."}
                   </p>
                 </div>
@@ -630,15 +802,14 @@ export default function InventoryExpensesPage() {
                 ) : !isTodayOpen ? (
                   <form onSubmit={handleOpenDay} className="space-y-4 font-sans text-sm">
                     <div className="bg-muted/40 border border-border/75 rounded-xl p-4 space-y-3">
-                      <label className="block text-xs font-bold uppercase tracking-wider text-muted-foreground">Opening Cash Balance (₹)</label>
+                      <label className="block text-xs font-bold uppercase tracking-wider text-muted-foreground">Opening Cash Balance (₹) <span className="normal-case font-normal text-muted-foreground/60">— optional</span></label>
                       <input
                         type="number"
                         min="0"
                         value={openingCash || ''}
                         onChange={(e) => setOpeningCash(Number(e.target.value))}
                         className="w-full px-4 py-2.5 rounded-xl border border-border bg-background focus:border-primary focus:ring-1 focus:ring-primary transition-colors"
-                        placeholder="0"
-                        required
+                        placeholder="0 (leave blank to skip)"
                       />
                     </div>
                     <button
