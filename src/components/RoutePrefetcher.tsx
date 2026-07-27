@@ -9,7 +9,6 @@ const PREFETCH_ROUTES = [
   '/order',
   '/offers',
   '/history',
-  '/menu',
 ];
 
 export function RoutePrefetcher() {
