@@ -32,13 +32,13 @@ const fetchMenuItemsFromDb = async (): Promise<MenuItemType[]> => {
 const getCachedCategories = unstable_cache(
   fetchCategoriesFromDb,
   ['categories-list'],
-  { revalidate: 3600, tags: ['menu', 'categories'] }
+  { revalidate: 60, tags: ['menu', 'categories'] }
 );
 
 const getCachedMenuItems = unstable_cache(
   fetchMenuItemsFromDb,
   ['menu-items-list'],
-  { revalidate: 3600, tags: ['menu', 'items'] }
+  { revalidate: 60, tags: ['menu', 'items'] }
 );
 
 export const menuService = {
