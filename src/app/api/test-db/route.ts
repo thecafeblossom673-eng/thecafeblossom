@@ -7,31 +7,32 @@ export async function GET() {
   if (!uri) {
     return NextResponse.json({
       status: 'ERROR',
-      issue: 'MONGODB_URI environment variable is NOT set in Vercel',
-      fix: 'Go to Vercel → Settings → Environment Variables and add MONGODB_URI'
+      issue: 'MONGODB_URI is NOT SET in Vercel at all',
     }, { status: 500 });
   }
 
-  // Mask password for safe display
-  const maskedUri = uri.replace(/:([^@]+)@/, ':***@');
+  // Show full URI so we can debug exactly what Vercel has
+  const parts = uri.match(/mongodb\+srv:\/\/([^:]+):([^@]+)@(.+)/);
+  const username = parts?.[1] ?? 'PARSE_FAILED';
+  const password = parts?.[2] ?? 'PARSE_FAILED';
+  const host = parts?.[3] ?? 'PARSE_FAILED';
 
   try {
     await dbConnect();
     return NextResponse.json({
       status: 'SUCCESS ✅',
-      message: 'MongoDB connected successfully!',
-      uri_used: maskedUri,
+      message: 'MongoDB connected!',
+      username,
+      host,
     });
   } catch (error: any) {
     return NextResponse.json({
       status: 'ERROR ❌',
       message: error.message,
-      uri_used: maskedUri,
-      fix: error.message?.includes('ECONNREFUSED') || error.message?.includes('network')
-        ? 'Check MongoDB Atlas Network Access — add 0.0.0.0/0'
-        : error.message?.includes('Authentication failed') || error.message?.includes('bad auth')
-        ? 'Wrong username or password in MONGODB_URI'
-        : 'Unknown error — see message above'
+      username,
+      password_length: password.length,
+      password_preview: password.substring(0, 3) + '***' + password.slice(-2),
+      host,
     }, { status: 500 });
   }
 }
