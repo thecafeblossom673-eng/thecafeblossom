@@ -1,4 +1,4 @@
-import mongoose from 'mongoose';
+import mongoose, { Mongoose } from 'mongoose';
 
 const MONGODB_URI = process.env.MONGODB_URI;
 
@@ -14,7 +14,7 @@ if (!MONGODB_URI) {
  */
 declare global {
   // eslint-disable-next-line no-var
-  var mongoose: { conn: typeof mongoose | null; promise: Promise<typeof mongoose> | null };
+  var mongoose: { conn: Mongoose | null; promise: Promise<Mongoose> | null };
 }
 
 let cached = globalThis.mongoose;
